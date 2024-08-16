@@ -16,3 +16,4 @@ axum = "0.7.5"
 daemonize = "0.5.0"
 rayon = "1.10.0"
 tokio = { version="1.39.2", features=["full"] }
+clap = "4.5.16"
