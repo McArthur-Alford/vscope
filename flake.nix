@@ -56,6 +56,8 @@
               highfive
               linuxKernel.packages.linux_6_10.perf
               flamegraph
+              protobuf
+              openssl
             ])
             ++ (with llvm; [
               lldb

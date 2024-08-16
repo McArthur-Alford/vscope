@@ -7,8 +7,8 @@ edition = "2021"
 resolver = "2"
 members = [
   "crates/cli",
-  "crates/ui",
-  "crates/service"
+  "crates/service", 
+  "crates/core"
 ]
 
 [workspace.dependencies]
@@ -18,4 +18,14 @@ rayon = "1.10.0"
 tokio = { version="1.39.2", features=["full"] }
 clap = "4.5.16"
 serde = { version="1.0.208", features=["derive"] }
-iced = "0.12.1"
+serde_json = "1.0.125"
+hyperlocal = "0.9"
+tracing = "0.1.40"
+tracing-subscriber = "0.3"
+vs-core = { path = "crates/core" }
+lancedb = "0.9.0"
+arrow = "52.2.0"
+futures-util = "0.3.30"
+fastembed = "3.14.1"
+inotify = "0.10.2"
+anyhow = "1.0.86"

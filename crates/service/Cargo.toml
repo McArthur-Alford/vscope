@@ -1,7 +1,22 @@
 [package]
 name = "service"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 
 [dependencies]
 rayon.workspace = true
+daemonize.workspace = true
+hyperlocal.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+axum.workspace = true
+tokio.workspace = true
+vs-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+lancedb.workspace = true
+arrow.workspace = true
+futures-util.workspace = true
+fastembed.workspace = true
+inotify.workspace = true
+anyhow.workspace = true
