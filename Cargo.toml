@@ -1,6 +1,18 @@
-[package]
+[workspace.package]
 name = "hackathon"
 version = "0.1.0"
 edition = "2021"
 
-[dependencies]
+[workspace]
+resolver = "2"
+members = [
+  "crates/cli",
+  "crates/ui",
+  "crates/service"
+]
+
+[workspace.dependencies]
+axum = "0.7.5"
+daemonize = "0.5.0"
+rayon = "1.10.0"
+tokio = { version="1.39.2", features=["full"] }
