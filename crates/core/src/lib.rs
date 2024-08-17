@@ -43,7 +43,7 @@ impl Connection {
         self.stream.flush().await?;
         Ok(())
     }
-    pub async fn recieve_message(&mut self) -> anyhow::Result<Message> {
+    pub async fn receive_message(&mut self) -> anyhow::Result<Message> {
         let mut buf = Vec::new();
         while let Ok(_) = self.stream.read_buf(&mut buf).await {}
         bincode::deserialize::<Message>(&buf).context("Failed to deserialize")
@@ -51,7 +51,7 @@ impl Connection {
 
     pub async fn communicate(&mut self, message: Message) -> anyhow::Result<Message> {
         self.send_message(message).await?;
-        self.recieve_message().await
+        self.receive_message().await
     }
 }
 
