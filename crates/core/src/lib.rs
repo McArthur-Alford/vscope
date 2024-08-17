@@ -12,7 +12,7 @@ use tokio::{
 // #[serde(untagged)]
 #[serde(tag = "t", content = "c")]
 pub enum Message {
-    Search(PathBuf),             // Set the search term
+    Search(String),              // Set the search term
     Get(usize),                  // Get the next n things matching the search term
     Track(PathBuf, TrackArgs),   // Track a directory or file
     Untrack(PathBuf, TrackArgs), // Untrack a directory or file

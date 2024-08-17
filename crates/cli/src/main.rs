@@ -9,9 +9,8 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::{fs, io};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use Message::Confirmation;
 use vs_core::{connect_to_daemon, Message, TrackArgs};
-use crate::Commands::Search;
+use Message::Confirmation;
 
 #[derive(Parser, Debug)]
 #[command(name = "vs", version, about, long_about = None)]
@@ -19,7 +18,7 @@ use crate::Commands::Search;
 struct Cli {
     #[clap(flatten)]
     search: Option<SearchArgs>,
-    
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -40,7 +39,7 @@ enum Commands {
 #[derive(Args, Debug)]
 struct SearchArgs {
     query: String,
-    
+
     /// Recurse into directories and symlinks.
     #[arg(short, long)]
     recurse: bool,
@@ -80,32 +79,32 @@ async fn main() -> anyhow::Result<()> {
     //         follow_symlinks: false,
     //     },
     // );
+    // let message = Message::Search("context".to_string());
     // println!("{:?}", connection.communicate(message).await);
+    // return Ok(());
 
     let args = Cli::parse();
-    
+
     let mut connection = connect_to_daemon().await?;
 
     match &args.command {
-        Some(Commands::Track {path}) => {
+        Some(Commands::Track { path }) => {
             if !path.exists() {
                 return anyhow::bail!("Path does not exist");
             }
             println!("Tracking directory: {}", path.display());
-            
+
             let message = Message::Track(path.clone(), TrackArgs::default());
             let response = connection.communicate(message).await?;
-            
+
             match response {
-                Confirmation => {
-                    Ok(())
-                }
+                Confirmation => Ok(()),
                 _ => {
                     anyhow::bail!("Unexpected response");
                 }
             }
         }
-        Some(Commands::Untrack {path}) => {
+        Some(Commands::Untrack { path }) => {
             if !path.exists() {
                 return anyhow::bail!("Path does not exist");
             }
@@ -115,20 +114,14 @@ async fn main() -> anyhow::Result<()> {
             let response = connection.communicate(message).await?;
 
             match response {
-                Confirmation => {
-                    Ok(())
-                }
+                Confirmation => Ok(()),
                 _ => {
                     anyhow::bail!("Unexpected response");
                 }
             }
         }
-        Some(Commands::Search(args)) => {
-            main_command(args).await
-        }
-        _ => {
-            main_command(&args.search.unwrap()).await
-        }
+        Some(Commands::Search(args)) => main_command(args).await,
+        _ => main_command(&args.search.unwrap()).await,
     }
 }
 

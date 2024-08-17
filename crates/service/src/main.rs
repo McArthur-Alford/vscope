@@ -180,14 +180,13 @@ fn track(path: &PathBuf, args: &TrackArgs, tx: &mut mpsc::Sender<PathBuf>) {
     }
 }
 
-fn untrack(path: &PathBuf, args: &TrackArgs) {}
-
 #[instrument(skip_all)]
 async fn maintainer(
     mut rx: mpsc::Receiver<(Message, oneshot::Sender<Message>)>,
 ) -> anyhow::Result<()> {
     let model = TextEmbedding::try_new(Default::default())?;
     info!("Loaded model");
+    let mut db = initialize_db().await.map_err(|e| anyhow!("Failed"))?;
 
     let mut config = Arc::new(RwLock::new(
         get_config()
@@ -199,30 +198,30 @@ async fn maintainer(
     let (encoder_tx, mut encoder_rx) = mpsc::channel(1000);
     tokio::task::spawn(encoder(encoder_rx, model));
 
+    let mut got = Vec::new();
+    let model = TextEmbedding::try_new(Default::default())?;
     info!("Starting maintainer");
     while let Some((message, response)) = rx.recv().await {
         info!(message=?message, "Received message");
         match message {
             Message::Search(path) => {
-                let db = initialize_db().await.map_err(|e| anyhow!("Failed"))?;
+                let query = model.embed(vec![path], None)?.get(0).unwrap().clone();
+                info!(query=?query, "Got query");
+                got = db_get(&mut db, query).await?;
                 response
                     .send(Message::Confirmation)
                     .map_err(|e| anyhow!("Failed to send response"))?;
             }
             Message::Get(n) => {
-                let paths = config
-                    .read()
-                    .await
-                    .tracked
-                    .iter()
-                    .cloned()
-                    .take(n)
-                    .collect();
+                let paths = got.iter().cloned().take(n).collect();
                 response
                     .send(Message::Paths(paths))
                     .map_err(|e| anyhow!("Failed to send response"))?;
             }
             Message::Track(path, args) => {
+                response
+                    .send(Message::Confirmation)
+                    .map_err(|e| anyhow!("Failed to send response"))?;
                 let args = args.clone();
                 let config = config.clone();
                 let encoder_tx = encoder_tx.clone();
@@ -234,12 +233,11 @@ async fn maintainer(
                 // Track all paths
                 config.write().await.tracked.extend(paths);
                 config.read().await.save();
-
+            }
+            Message::Untrack(path, args) => {
                 response
                     .send(Message::Confirmation)
                     .map_err(|e| anyhow!("Failed to send response"))?;
-            }
-            Message::Untrack(path, args) => {
                 let encoder_tx = encoder_tx.clone();
                 let config = config.clone();
                 let paths = tokio_rayon::spawn(move || {
@@ -255,8 +253,6 @@ async fn maintainer(
                 }
 
                 config.read().await.save();
-
-                let _ = response.send(Message::Confirmation);
             }
             Message::Paths(_) => panic!(),
             Message::Confirmation => panic!(),
@@ -385,26 +381,52 @@ async fn insert_db(db: &mut Connection, encodings: Vec<Vec<f32>>, paths: Vec<Pat
     let tbl = match db.open_table("index").execute().await {
         Ok(tbl) => tbl,
         Err(e) => db
-            .create_table("index", Box::new(batches))
+            .create_empty_table("index", schema)
             .execute()
             .await
             .unwrap(),
     };
 
-    // let mut options = QueryExecutionOptions::default();
-    // options.max_batch_length = 1;
-    // let results = tbl
-    //     .query()
-    //     .nearest_to(&[1.0; 128])
-    //     .unwrap()
-    //     .limit(1)
-    //     .execute()
-    //     .await
-    //     .unwrap()
-    //     .try_collect::<Vec<_>>()
-    //     .await
-    //     .unwrap();
+    tbl.add(batches);
 }
+
+#[instrument(skip_all)]
+async fn db_get(db: &mut Connection, query: Vec<f32>) -> anyhow::Result<Vec<PathBuf>> {
+    let schema = db_schema().await;
+    let tbl = match db.open_table("index").execute().await {
+        Ok(tbl) => tbl,
+        Err(e) => db
+            .create_empty_table("index", schema)
+            .execute()
+            .await
+            .unwrap(),
+    };
+
+    tbl.create_index(&["vector"], lancedb::index::Index::Auto)
+        .execute()
+        .await?;
+
+    let mut options = QueryExecutionOptions::default();
+    options.max_batch_length = 1;
+    let results = tbl
+        .query()
+        .nearest_to(&[1.0; 128])
+        .unwrap()
+        .limit(1)
+        .execute()
+        .await
+        .unwrap()
+        .try_collect::<Vec<_>>()
+        .await
+        .unwrap();
+
+    println!("{:?}", results);
+    todo!()
+    // results.iter().map(|e| ).collect()
+}
+
+#[instrument(skip_all)]
+async fn db_remove(db: &mut Connection, paths: HashSet<PathBuf>) {}
 
 #[instrument(skip_all)]
 async fn db_schema() -> Arc<Schema> {
