@@ -18,13 +18,13 @@ use std::collections::{HashSet, VecDeque};
 use std::env::args;
 use std::error::Error;
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::{BufReader, Read, Write};
 use std::path::Path;
 use std::str::Chars;
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 use std::{fs::read_dir, io, path::PathBuf, str::FromStr};
-use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader, Interest};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, Interest};
 use tokio::net::unix::SocketAddr;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::select;
@@ -69,7 +69,7 @@ fn crawl_directory<F: Send + Sync + Copy + Fn(&PathBuf, &TrackArgs, &mut mpsc::S
     mut tx: mpsc::Sender<PathBuf>,
     f: F,
 ) -> io::Result<Vec<PathBuf>> {
-    // info!(dir=%dir.display(), "Crawled");
+    info!(dir=%dir.display(), "Crawled");
     f(&dir, &args, &mut tx);
     let mut out = vec![dir.clone()];
     if dir.is_dir() && args.recursive && (!dir.is_symlink() || args.follow_symlinks) {
@@ -219,16 +219,20 @@ async fn maintainer(
                     .map_err(|e| anyhow!("Failed to send response"))?;
             }
             Message::Track(path, args) => {
+                info!("Handling track");
                 response
                     .send(Message::Confirmation)
                     .map_err(|e| anyhow!("Failed to send response"))?;
                 let args = args.clone();
                 let config = config.clone();
                 let encoder_tx = encoder_tx.clone();
+                let path2 = path.clone();
                 let paths =
                     tokio_rayon::spawn(move || crawl_directory(path, args, encoder_tx, track))
                         .await
                         .unwrap_or_default();
+
+                info!(path=?path2, "Finished crawling for track");
 
                 // Track all paths
                 config.write().await.tracked.extend(paths);
@@ -281,7 +285,7 @@ async fn encoder(mut encoder_rx: mpsc::Receiver<PathBuf>, model: TextEmbedding) 
                     warn!(bin=?path, "Skipping binary");
                     None
                 } else if path.is_file() {
-                    let Ok(mut file) = File::open(path) else {
+                    let Ok(mut file) = BufReader::new(File::open(path)?) else {
                         return None;
                     };
                     let mut contents = String::new();
@@ -295,7 +299,6 @@ async fn encoder(mut encoder_rx: mpsc::Receiver<PathBuf>, model: TextEmbedding) 
             })
             .collect();
         info!("Starting encode");
-        println!("{:?}", names);
         let Ok(embeddings) = model.embed(names, Some(amount)) else {
             warn!("Encoding failed");
             continue;
