@@ -93,8 +93,10 @@ async fn main() -> anyhow::Result<()> {
                 return anyhow::bail!("Path does not exist");
             }
             println!("Tracking directory: {}", path.display());
-
-            let message = Message::Track(path.clone(), TrackArgs::default());
+            let message = Message::Track(
+                fs::canonicalize(path.clone().to_owned())?,
+                TrackArgs::default(),
+            );
             let response = connection.communicate(message).await?;
 
             match response {
@@ -110,7 +112,10 @@ async fn main() -> anyhow::Result<()> {
             }
             println!("Untracking directory: {}", path.display());
 
-            let message = Message::Untrack(path.clone(), TrackArgs::default());
+            let message = Message::Untrack(
+                fs::canonicalize(path.clone().to_owned())?,
+                TrackArgs::default(),
+            );
             let response = connection.communicate(message).await?;
 
             match response {
