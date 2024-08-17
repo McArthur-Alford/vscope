@@ -306,7 +306,7 @@ async fn encoder(mut encoder_rx: mpsc::Receiver<PathBuf>, model: TextEmbedding) 
         };
         info!("Finished Encoding");
 
-        // insert_db(&mut db, embeddings, buffer).await;
+        insert_db(&mut db, embeddings, buffer).await;
     }
 }
 
@@ -412,7 +412,7 @@ async fn db_schema() -> Arc<Schema> {
         Field::new("path", DataType::Utf8, false),
         Field::new(
             "vector",
-            DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 128),
+            DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 384),
             true,
         ),
     ]))
