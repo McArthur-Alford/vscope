@@ -1,7 +1,14 @@
 use anyhow::{Context, Result};
-use arrow::datatypes::{DataType, Field, Schema, ToByteSlice};
+use arrow::array::{
+    Array, ArrayData, DictionaryArray, FixedSizeListArray, Int32Array, RecordBatch,
+    RecordBatchIterator, StringArray,
+};
+use arrow::datatypes::{DataType, Field, Float32Type, Schema, ToByteSlice, Utf8Type};
+use arrow::ipc::{FixedSizeList, Utf8};
 use axum::extract::FromRef;
 use fastembed::{TextEmbedding, TextRerank};
+use futures_util::TryStreamExt;
+use lancedb::query::{ExecutableQuery, QueryBase, QueryExecutionOptions};
 use lancedb::Connection;
 use rayon::iter::{ParallelBridge, ParallelExtend, ParallelIterator};
 use serde::{Deserialize, Serialize};
@@ -175,7 +182,18 @@ async fn maintainer(
         info!(message=?message, "Received message");
         match message {
             Message::Search(path) => todo!(),
-            Message::Get(n) => todo!(),
+            Message::Get(n) => {
+                response.send(Message::Paths(
+                    config
+                        .read()
+                        .await
+                        .tracked
+                        .iter()
+                        .cloned()
+                        .take(n)
+                        .collect(),
+                ));
+            }
             Message::Track(path, args) => {
                 let args = args.clone();
                 info!("a");
@@ -222,11 +240,12 @@ async fn maintainer(
 }
 
 async fn encoder(mut encoder_rx: mpsc::Receiver<PathBuf>, model: TextEmbedding) {
+    let mut db = initialize_db().await.expect("Expected DB");
     loop {
         let mut buffer = Vec::<PathBuf>::new();
         let amount = encoder_rx.recv_many(&mut buffer, 100).await;
 
-        let buffer = buffer
+        let names = buffer
             .iter()
             .filter_map(|path| {
                 let name = path.file_name().map(|s| s.to_string_lossy().to_string());
@@ -244,7 +263,11 @@ async fn encoder(mut encoder_rx: mpsc::Receiver<PathBuf>, model: TextEmbedding) 
                 }
             })
             .collect();
-        let embeddings = model.embed(buffer, Some(amount));
+        let Ok(embeddings) = model.embed(names, Some(amount)) else {
+            continue;
+        };
+
+        insert_db(&mut db, &embeddings, &buffer);
     }
 }
 
@@ -274,7 +297,6 @@ async fn socket_listener(
 
 #[tokio::main]
 async fn main() {
-    initialize_db().await.unwrap();
     tracing_subscriber::fmt::init();
     let (tx, rx) = mpsc::channel::<(Message, oneshot::Sender<Message>)>(1);
 
@@ -289,17 +311,74 @@ async fn main() {
     error!(reason = ?e, "critical task closed, shutting down service");
 }
 
-async fn initialize_db() -> Result<Connection, Box<dyn Error>> {
-    let db = lancedb::connect("/tmp/vs-db").execute().await?;
+async fn insert_db(db: &mut Connection, encodings: &Vec<Vec<f32>>, paths: &Vec<PathBuf>) {
+    let amount = encodings.len();
+    let schema = db_schema().await;
+    // Create a RecordBatch stream.
+    let batches = RecordBatchIterator::new(
+        vec![RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(StringArray::from(
+                    paths
+                        .iter()
+                        .map(|p| p.to_string_lossy().to_string())
+                        .collect::<Vec<_>>(),
+                )),
+                Arc::new(
+                    FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
+                        (0..256).map(|_| Some(vec![Some(1.0); 128])),
+                        128,
+                    ),
+                ),
+            ],
+        )
+        .unwrap()]
+        .into_iter()
+        .map(Ok),
+        schema.clone(),
+    );
 
-    let schema = Arc::new(Schema::new(vec![
+    let tbl = match db.open_table("index").execute().await {
+        Ok(tbl) => tbl,
+        Err(e) => db
+            .create_table("index", Box::new(batches))
+            .execute()
+            .await
+            .unwrap(),
+    };
+
+    let mut options = QueryExecutionOptions::default();
+    options.max_batch_length = 1;
+    let results = tbl
+        .query()
+        .nearest_to(&[1.0; 128])
+        .unwrap()
+        .limit(1)
+        .execute()
+        .await
+        .unwrap()
+        .try_collect::<Vec<_>>()
+        .await
+        .unwrap();
+
+    println!("{:?}", results);
+}
+
+async fn db_schema() -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
         Field::new("path", DataType::Utf8, false),
         Field::new(
             "vector",
             DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 128),
             true,
         ),
-    ]));
+    ]))
+}
+
+async fn initialize_db() -> Result<Connection, Box<dyn Error>> {
+    let db = lancedb::connect("/tmp/vs-db").execute().await?;
+    let schema = db_schema().await;
 
     if !db
         .table_names()
@@ -314,48 +393,4 @@ async fn initialize_db() -> Result<Connection, Box<dyn Error>> {
     }
 
     Ok(db)
-    // // Create a RecordBatch stream.
-    // let batches = RecordBatchIterator::new(
-    //     vec![RecordBatch::try_new(
-    //         schema.clone(),
-    //         vec![
-    //             Arc::new(Int32Array::from_iter_values(0..256)),
-    //             Arc::new(
-    //                 FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
-    //                     (0..256).map(|_| Some(vec![Some(1.0); 128])),
-    //                     128,
-    //                 ),
-    //             ),
-    //         ],
-    //     )
-    //     .unwrap()]
-    //     .into_iter()
-    //     .map(Ok),
-    //     schema.clone(),
-    // );
-
-    // let tbl = match db.open_table("index").execute().await {
-    //     Ok(tbl) => tbl,
-    //     Err(e) => db
-    //         .create_table("index", Box::new(batches))
-    //         .execute()
-    //         .await
-    //         .unwrap(),
-    // };
-
-    // let mut options = QueryExecutionOptions::default();
-    // options.max_batch_length = 1;
-    // let results = tbl
-    //     .query()
-    //     .nearest_to(&[1.0; 128])
-    //     .unwrap()
-    //     .limit(1)
-    //     .execute()
-    //     .await
-    //     .unwrap()
-    //     .try_collect::<Vec<_>>()
-    //     .await
-    //     .unwrap();
-
-    // println!("{:?}", results);
 }
