@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use arrow::datatypes::{DataType, Field, Schema, ToByteSlice};
-use fastembed::TextEmbedding;
+use axum::extract::FromRef;
+use fastembed::{TextEmbedding, TextRerank};
 use lancedb::Connection;
 use rayon::iter::{ParallelBridge, ParallelExtend, ParallelIterator};
 use serde::{Deserialize, Serialize};
@@ -52,24 +53,23 @@ impl Config {
     }
 }
 
-fn crawl_directory<T: Send + Sync>(
+fn crawl_directory<F: Send + Sync + Copy + Fn(&PathBuf, &TrackArgs, &mut mpsc::Sender<PathBuf>)>(
     dir: PathBuf,
     args: TrackArgs,
-    f: fn(&PathBuf, &TrackArgs) -> Option<T>,
-) -> io::Result<Vec<T>> {
-    let mut out = match f(&dir, &args) {
-        Some(t) => vec![t],
-        None => Vec::new(),
-    };
+    mut tx: mpsc::Sender<PathBuf>,
+    f: F,
+) -> io::Result<Vec<PathBuf>> {
+    f(&dir, &args, &mut tx);
+    let mut out = vec![dir.clone()];
     if dir.is_dir() && args.recursive && (!dir.is_symlink() || args.follow_symlinks) {
         out.extend({
             let entries = read_dir(dir)?;
             let results = entries
                 .par_bridge()
                 .filter_map(Result::ok)
-                .filter_map(|p| crawl_directory(p.path(), args.clone(), f).ok())
+                .filter_map(|p| crawl_directory(p.path(), args.clone(), tx.clone(), f).ok())
                 .flatten()
-                .collect::<Vec<T>>();
+                .collect::<Vec<PathBuf>>();
             results
         });
     }
@@ -134,21 +134,19 @@ async fn get_config() -> Result<Config, Box<dyn Error + Send + Sync>> {
     })
 }
 
-fn track(path: &PathBuf, args: &TrackArgs) -> Option<PathBuf> {
+fn track(path: &PathBuf, args: &TrackArgs, tx: &mut mpsc::Sender<PathBuf>) {
     // Embed the path and save it to the database
     if !path.exists() {
-        return None;
+        return;
     }
 
     if path.is_dir() && !args.recursive {
-        // Embed the name
+        tx.blocking_send(path.clone());
     }
-    if path.is_file() {
-        // Embed the name + contents
+    if path.is_file() && true {
+        // TODO regex, etc
+        tx.blocking_send(path.clone());
     }
-
-    // Return the path for tracking
-    Some(path.clone())
 }
 
 async fn maintainer(
@@ -160,26 +158,79 @@ async fn maintainer(
     let mut config = Arc::new(RwLock::new(get_config().await?));
     info!("Loaded Config");
 
+    let (encoder_tx, mut encoder_rx) = mpsc::channel(1000);
+    tokio::task::spawn(encoder(encoder_rx, model));
+
     info!("Starting maintainer");
     while let Some((message, response)) = rx.recv().await {
         match message {
-            Message::Search(_) => todo!(),
-            Message::Get(_) => todo!(),
+            Message::Search(path) => todo!(),
+            Message::Get(n) => todo!(),
             Message::Track(path, args) => {
+                let args = args.clone();
                 let config = config.clone();
-                let paths = tokio_rayon::spawn(|| crawl_directory(path, args, track))
-                    .await
-                    .unwrap_or_default();
+                let encoder_tx = encoder_tx.clone();
+                let paths =
+                    tokio_rayon::spawn(move || crawl_directory(path, args, encoder_tx, track))
+                        .await
+                        .unwrap_or_default();
 
                 // Track all paths
                 config.write().await.tracked.extend(paths);
+                config.read().await.save();
+
+                let _ = response.send(Message::Confirmation);
             }
-            Message::Untrack(_) => todo!(),
+            Message::Untrack(path, args) => {
+                let encoder_tx = encoder_tx.clone();
+                let config = config.clone();
+                let paths = tokio_rayon::spawn(move || {
+                    crawl_directory(path, args, encoder_tx.clone(), |_, _, _| {})
+                })
+                .await
+                .unwrap_or_default();
+
+                // Untrack the paths
+                let tracked = &mut config.write().await.tracked;
+                for item in paths {
+                    tracked.remove(&item);
+                }
+
+                config.read().await.save();
+            }
             Message::Paths(_) => todo!(),
             Message::Confirmation => todo!(),
         };
     }
     Ok(())
+}
+
+async fn encoder(mut encoder_rx: mpsc::Receiver<PathBuf>, model: TextEmbedding) {
+    loop {
+        let mut buffer = Vec::<PathBuf>::new();
+        let amount = encoder_rx.recv_many(&mut buffer, 100).await;
+
+        let buffer = buffer
+            .iter()
+            .filter_map(|path| {
+                let name = path.file_name().map(|s| s.to_string_lossy().to_string());
+                if path.is_file() {
+                    let Ok(mut file) = File::open(path) else {
+                        return None;
+                    };
+                    let mut contents = String::new();
+                    let _ = file.read_to_string(&mut contents);
+                    Some([name.unwrap_or("".to_string()), contents].join(": "))
+                } else if path.is_dir() {
+                    name
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let embeddings = model.embed(buffer, Some(amount));
+        println!("{:?}", embeddings);
+    }
 }
 
 async fn socket_listener(
@@ -221,21 +272,6 @@ async fn main() {
     );
 
     error!(reason = ?e, "critical task closed, shutting down service");
-
-    // let results = crawl_directory(
-    //     PathBuf::from_str(&args().collect::<Vec<_>>()[1]).unwrap(),
-    //     |p| {
-    //         println!("{}", p.display());
-    //         p
-    //     },
-    // )
-    // .unwrap()
-    // .iter()
-    // .map(|p| p.display().to_string())
-    // .collect();
-
-    // println!("{:?}", results);
-    // println!("{:?}", model.embed(results, None).unwrap()[0]);
 }
 
 async fn initialize_db() -> Result<Connection, Box<dyn Error>> {
