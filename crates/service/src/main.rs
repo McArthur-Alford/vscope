@@ -289,7 +289,7 @@ async fn encoder(mut encoder_rx: mpsc::Receiver<PathBuf>, model: TextEmbedding) 
                         return None;
                     };
                     let mut reader = BufReader::new(file);
-                    let mut buf = vec![0u8; 1000];
+                    let mut buf = vec![0u8; 1_000_000];
                     reader.read_exact(&mut buf).ok()?;
                     let buf = buf
                         .iter()
