@@ -1,6 +1,9 @@
 use crate::tui;
 use std::io;
+use std::io::{Error, ErrorKind};
 use std::path::PathBuf;
+use std::sync::Mutex;
+use anyhow::anyhow;
 use ratatui::{
     buffer::Buffer,
     crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind},
@@ -14,34 +17,63 @@ use ratatui::{
     },
     Frame,
 };
-
-
+use ratatui::layout::{Direction, Layout};
+use ratatui::prelude::{Color, Style, Modifier, Constraint, StatefulWidget};
+use ratatui::symbols::block;
+use ratatui::widgets::{Borders, HighlightSpacing, List, ListDirection, ListItem, ListState};
+use crate::app_interactive::AppEvent::Run;
 
 #[derive(Debug, Default)]
+struct StatefulList {
+    state: ListState,
+    items: Vec<PathBuf>,
+}
+#[derive(Debug, Default)]
 pub struct AppInteractive {
-    selected_index: usize,
-    paths: Vec<PathBuf>,
-    exit: bool,
+    items: StatefulList,
+    status: AppEvent,
+}
+
+#[derive(Debug, Default)]
+enum AppEvent {
+    #[default]
+    Run,
+    Quit,
+    Save
 }
 
 impl AppInteractive {
     /// runs the application's main loop until the user quits
-    pub fn run(&mut self, terminal: &mut tui::Tui) -> io::Result<String> {
-        while !self.exit {
+    pub fn run(&mut self, terminal: &mut tui::Tui) -> anyhow::Result<Option<String>> {
+        self.items = StatefulList::with_items(["~/home/src/", "~/home/src/vscope", "~/home/src/"]
+            .iter()
+            .map(|path| PathBuf::from(path))
+            .collect());
+        
+        while matches!(self.status, Run) {
             terminal.draw(|frame| self.render_frame(frame))?;
             self.handle_events()?;
         }
         
-        let ret: String = self.paths
-            .get(self.selected_index)
-            .unwrap_or(&PathBuf::from(""))
-            .display()
-            .to_string();
-        
-        Ok(ret)
+        match self.status {
+            AppEvent::Save => {
+                let test = self.items
+                    .state
+                    .selected()
+                    .map(|selected| self.items.items.get(selected)
+                        .unwrap_or(&PathBuf::from("magic")).display().to_string());
+                Ok(test)
+            },
+            AppEvent::Quit => {
+                Ok(Some("Test".to_string()))
+            }
+            _ => {
+                Err(anyhow!("Invalid status"))
+            }
+        }
     }
 
-    fn render_frame(&self, frame: &mut Frame) {
+    fn render_frame(&mut self, frame: &mut Frame) {
         frame.render_widget(self, frame.area());
     }
 
@@ -60,27 +92,23 @@ impl AppInteractive {
     fn handle_key_event(&mut self, key_event: KeyEvent) {
         match key_event.code {
             KeyCode::Char('q') => self.exit(),
-            KeyCode::Up => self.prev_index(),
-            KeyCode::Down => self.next_index(),
+            KeyCode::Up => self.items.previous(),
+            KeyCode::Down => self.items.next(),
+            KeyCode::Enter => self.save(),
             _ => {}
         }
     }
 
+    fn save(&mut self) {
+        self.status = AppEvent::Save;
+    }
+    
     fn exit(&mut self) {
-        self.exit = true;
-    }
-
-    fn next_index(&mut self) {
-        self.selected_index = self.selected_index.saturating_add(1)
-            .clamp(0, self.paths.len().saturating_sub(1));
-    }
-
-    fn prev_index(&mut self) {
-        self.selected_index = self.selected_index.saturating_sub(1);
+        self.status = AppEvent::Quit;
     }
 }
 
-impl Widget for &AppInteractive {
+impl Widget for &mut AppInteractive {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let app_title = Title::from(" Counter App Tutorial ".bold());
         let instructions = Title::from(Line::from(vec![
@@ -93,6 +121,15 @@ impl Widget for &AppInteractive {
             " Quit ".into(),
             "<Q>".blue().bold(),
         ]));
+        
+        let chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(33),
+                Constraint::Percentage(67),
+            ].as_ref())
+            .split(area);
+        
         let block = Block::bordered()
             .title(app_title.alignment(Alignment::Center))
             .title(
@@ -104,12 +141,91 @@ impl Widget for &AppInteractive {
 
         let counter_text = Text::from(vec![Line::from(vec![
             "Value: ".into(),
-            self.selected_index.to_string().yellow(),
+            self.items.state.selected().unwrap_or(0).to_string().yellow(),
         ])]);
+
+        let list_area = Layout::default()
+            .horizontal_margin(2)
+            .vertical_margin(1)
+            .constraints([
+                Constraint::Percentage(100),
+            ].as_ref())
+            .split(chunks[0]);
+
+        // Iterate through all elements in the `items` and stylize them.
+        let items: Vec<ListItem> = self
+            .items
+            .items
+            .iter()
+            .cloned()
+            .map(|path| ListItem::new(path.display().to_string()))
+            .collect();
+
+        // Create a List from all list items and highlight the currently selected one
+        let list = List::new(items)
+            .block(Block::default().title("Paths"))
+            .highlight_style(
+                Style::default()
+                    .add_modifier(Modifier::BOLD)
+                    .add_modifier(Modifier::REVERSED)
+            )
+            .highlight_symbol(">")
+            .repeat_highlight_symbol(true)
+            .highlight_spacing(HighlightSpacing::Always);
+
+        let block2 = Block::bordered().borders(Borders::RIGHT);
+        
+        block2.render(chunks[0], buf);
+        
+        StatefulWidget::render(list, list_area[0], buf, &mut self.items.state);
 
         Paragraph::new(counter_text)
             .centered()
             .block(block)
             .render(area, buf);
+    }
+}
+
+
+impl StatefulList {
+    fn with_items(items: Vec<PathBuf>) -> StatefulList {
+        StatefulList {
+            state: ListState::default(),
+            items: items.iter().cloned().collect()
+        }
+    }
+
+    fn next(&mut self) {
+        let i = match self.state.selected() {
+            Some(i) => {
+                if i >= self.items.len() - 1 {
+                    0
+                } else {
+                    i + 1
+                }
+            }
+            None => 0,
+        };
+        self.state.select(Some(i));
+    }
+
+    fn previous(&mut self) {
+        let i = match self.state.selected() {
+            Some(i) => {
+                if i == 0 {
+                    self.items.len() - 1
+                } else {
+                    i - 1
+                }
+            }
+            None => 0
+        };
+        self.state.select(Some(i));
+    }
+
+    fn unselect(&mut self) {
+        let offset = self.state.offset();
+        self.state.select(None);
+        *self.state.offset_mut() = offset;
     }
 }

@@ -80,9 +80,9 @@ async fn main() -> Result<()> {
         let mut terminal = tui::init().context("Failed to init terminal")?;
         let app_result = AppInteractive::default().run(&mut terminal);
         tui::restore()?;
-
+        
         app_result
-            .map(|path| print!("{}", path))
+            .map(|opt| opt.map(|path| print!("{}", path)))
             .context("App result was err")?;
 
         Ok(())
