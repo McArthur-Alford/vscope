@@ -1,14 +1,11 @@
 use crate::app_cli::AppCLI;
 use crate::app_interactive::AppInteractive;
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand, ValueHint};
-use ratatui::backend::CrosstermBackend;
-use ratatui::{style::Stylize, widgets::Widget, Terminal};
-use std::io::stdout;
+use ratatui::{style::Stylize, widgets::Widget};
 use std::path::PathBuf;
 use std::str::FromStr;
-use std::{fs, io};
-use std::sync::Mutex;
+use std::fs;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use vs_core::{connect_to_daemon, Connection, Message, TrackArgs};
 use Message::Confirmation;
@@ -30,25 +27,37 @@ enum Commands {
     Track {
         #[arg(value_hint = ValueHint::AnyPath)]
         path: PathBuf,
+
+        #[clap(flatten)]
+        args: SharedArgs,
     },
     Untrack {
         #[arg(value_hint = ValueHint::AnyPath)]
         path: PathBuf,
+
+        #[clap(flatten)]
+        args: SharedArgs,
     },
+}
+
+#[derive(Args, Debug)]
+struct SharedArgs {
+    /// Recurse into directories.
+    #[arg(short, long, group = "recurse_grp")]
+    recurse: bool,
+
+    /// Recurse into symlinks.
+    #[arg(short, long, requires = "recurse_grp")]
+    symlinks: bool,
 }
 
 #[derive(Args, Debug)]
 struct SearchArgs {
     query: String,
-
-    /// Recurse into directories and symlinks.
-    #[arg(short, long)]
-    recurse: bool,
-
-    /// Recurse into symlinks.
-    #[arg(short, long)]
-    symlinks: bool,
-
+    
+    #[clap(flatten)]
+    args: SharedArgs,
+    
     /// Show directories in output.
     #[arg(short, long)]
     directories: bool,
@@ -71,32 +80,20 @@ mod app_interactive;
 mod tui;
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    // let mut connection = connect_to_daemon().await?;
-    // let message = Message::Track(
-    //     fs::canonicalize("./crates".to_owned())?,
-    //     TrackArgs {
-    //         recursive: true,
-    //         follow_symlinks: false,
-    //     },
-    // );
-    // let message = Message::Search("context".to_string());
-    // println!("{:?}", connection.communicate(message).await);
-    // return Ok(());
-
+async fn main() -> Result<()> {
     let args = Cli::parse();
 
     let mut connection = connect_to_daemon().await?;
 
     match &args.command {
-        Some(Commands::Track { path }) => {
+        Some(Commands::Track { path, args }) => {
             if !path.exists() {
                 return anyhow::bail!("Path does not exist");
             }
             println!("Tracking directory: {}", path.display());
             let message = Message::Track(
                 fs::canonicalize(path.clone().to_owned())?,
-                TrackArgs::default(),
+                TrackArgs{recursive: args.recurse, follow_symlinks: args.symlinks},
             );
             let response = connection.communicate(message).await?;
 
@@ -107,7 +104,7 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
-        Some(Commands::Untrack { path }) => {
+        Some(Commands::Untrack { path, args }) => {
             if !path.exists() {
                 return anyhow::bail!("Path does not exist");
             }
@@ -115,7 +112,7 @@ async fn main() -> anyhow::Result<()> {
 
             let message = Message::Untrack(
                 fs::canonicalize(path.clone().to_owned())?,
-                TrackArgs::default(),
+                TrackArgs{recursive: args.recurse, follow_symlinks: args.symlinks},
             );
             let response = connection.communicate(message).await?;
 
@@ -132,29 +129,39 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn main_command(args: &SearchArgs, mut connection: Connection) -> Result<()> {
-    if args.inline.is_some() {
-        let message = Message::Get(args.inline.unwrap());
-        let response = connection.communicate(message).await?;
-        
-        let paths = match response {
-            Message::Paths(paths) => paths,
-            _ => { anyhow::bail!("Unexpected response"); }
-        };
-        
-        if args.list {
-            AppCLI::render_list(&paths).context("Failed to render list")
-        } else {
-            AppCLI::render(&paths).context("Failed to render")
+    let search_message = Message::Search(args.query.clone());
+    let response = connection.communicate(search_message).await?;
+    
+    match response {
+        Confirmation => {
+            if args.inline.is_some() {
+                let message = Message::Get(args.inline.unwrap());
+                let response = connection.communicate(message).await?;
+
+                let paths = match response {
+                    Message::Paths(paths) => paths,
+                    _ => { anyhow::bail!("Unexpected response"); }
+                };
+
+                if args.list {
+                    AppCLI::render_list(&paths).context("Failed to render list")
+                } else {
+                    AppCLI::render(&paths).context("Failed to render")
+                }
+            } else {
+                let mut terminal = tui::init().context("Failed to init terminal")?;
+                let app_result = AppInteractive::default().run(&mut terminal).await;
+                tui::restore()?;
+
+                app_result
+                    .map(|opt| opt.map(|path| print!("{}", path)))
+                    .context("App result was err")?;
+
+                Ok(())
+            }
         }
-    } else {
-        let mut terminal = tui::init().context("Failed to init terminal")?;
-        let app_result = AppInteractive::default().run(&mut terminal).await;
-        tui::restore()?;
-
-        app_result
-            .map(|opt| opt.map(|path| print!("{}", path)))
-            .context("App result was err")?;
-
-        Ok(())
+        _ => {
+            Err(anyhow::anyhow!("Unexpected response"))
+        }
     }
 }
