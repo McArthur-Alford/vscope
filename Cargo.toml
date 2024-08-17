@@ -31,7 +31,8 @@ inotify = "0.10.2"
 anyhow = "1.0.86"
 tokio-rayon = "2.1.0"
 ratatui = "0.28.0"
-cc = "0.13.2"
+# cc = { version="1.1.13", --no-default-features=true }
 
 [patch.crates-io]
-zstd = { path = "./zstd-rs" }
+# cc = { version="1.1.13", --no-default-features=true}
+zstd = { git="https://github.com/harana-oss/zstd-rs.git" }

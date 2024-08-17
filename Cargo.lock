@@ -5935,6 +5935,7 @@ checksum = "ced3678a2879b30306d323f4542626697a464a97c0a07c9aebf7ebca65cd4dde"
 [[package]]
 name = "zstd"
 version = "0.13.1"
+source = "git+https://github.com/harana-oss/zstd-rs.git#6b53c9a64eb0a5fb118dcf6f1c1e6896b8731f8f"
 dependencies = [
  "zstd-safe",
 ]
@@ -5942,6 +5943,7 @@ dependencies = [
 [[package]]
 name = "zstd-safe"
 version = "7.1.0"
+source = "git+https://github.com/harana-oss/zstd-rs.git#6b53c9a64eb0a5fb118dcf6f1c1e6896b8731f8f"
 dependencies = [
  "zstd-sys",
 ]
@@ -5949,6 +5951,7 @@ dependencies = [
 [[package]]
 name = "zstd-sys"
 version = "2.0.10+zstd.1.5.6"
+source = "git+https://github.com/harana-oss/zstd-rs.git#6b53c9a64eb0a5fb118dcf6f1c1e6896b8731f8f"
 dependencies = [
  "cc",
  "pkg-config",
