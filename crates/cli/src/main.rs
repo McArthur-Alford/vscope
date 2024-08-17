@@ -58,8 +58,8 @@ struct SearchArgs {
     filter: String,
 
     /// Show <value> search results inline.
-    #[arg(short, long, default_value = 20)]
-    inline: usize,
+    #[arg(short, long)]
+    inline: Option<usize>,
 
     /// Output results in a tabular format.
     #[arg(short, long)]
@@ -132,8 +132,8 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn main_command(args: &SearchArgs, mut connection: Connection) -> Result<()> {
-    if args.inline {
-        let message = Message::Get(args.inline);
+    if args.inline.is_some() {
+        let message = Message::Get(args.inline.unwrap());
         let response = connection.communicate(message).await?;
         
         let paths = match response {
