@@ -1,5 +1,6 @@
 use anyhow::{Context, Error};
 use serde::{Deserialize, Serialize};
+use serde_repr::{Deserialize_repr, Serialize_repr};
 use std::{path::PathBuf, str::FromStr};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -8,6 +9,8 @@ use tokio::{
 };
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
+// #[serde(untagged)]
+#[serde(tag = "t", content = "c")]
 pub enum Message {
     Search(PathBuf),             // Set the search term
     Get(usize),                  // Get the next n things matching the search term
@@ -38,15 +41,21 @@ pub struct Connection {
 
 impl Connection {
     pub async fn send_message(&mut self, message: Message) -> anyhow::Result<()> {
-        let message = bincode::serialize(&message)?;
+        let message = serde_json::to_vec(&message)?;
+        let size = message.len();
+        println!("{}", size);
+        self.stream.write_u32(size as u32).await?;
+        self.stream.flush().await?;
         self.stream.write_all(&message).await?;
         self.stream.flush().await?;
         Ok(())
     }
     pub async fn recieve_message(&mut self) -> anyhow::Result<Message> {
-        let mut buf = Vec::new();
-        while let Ok(_) = self.stream.read_buf(&mut buf).await {}
-        bincode::deserialize::<Message>(&buf).context("Failed to deserialize")
+        let n = self.stream.read_u32().await?;
+        let mut buf = vec![0; n as usize];
+        let _ = self.stream.read_exact(&mut buf).await?;
+        println!("{}", n);
+        serde_json::from_slice::<Message>(&buf).context("Failed to deserialize")
     }
 
     pub async fn communicate(&mut self, message: Message) -> anyhow::Result<Message> {

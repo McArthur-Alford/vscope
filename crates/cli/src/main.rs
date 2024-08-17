@@ -48,10 +48,7 @@ mod tui;
 #[tokio::main]
 async fn main() -> Result<()> {
     let mut connection = connect_to_daemon().await?;
-    let message = Message::Track(
-        PathBuf::from_str("/home/mcarthur/Development/hackathon/crates")?,
-        TrackArgs::default(),
-    );
+    let message = Message::Get(10);
     println!("{:?}", connection.communicate(message).await);
     return Ok(());
 

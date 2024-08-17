@@ -28,7 +28,7 @@ use tokio::net::unix::SocketAddr;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::select;
 use tokio::sync::{broadcast, mpsc, oneshot, Mutex, RwLock};
-use tracing::{error, info, warn};
+use tracing::{error, info, instrument, warn};
 use vs_core::{Message, TrackArgs};
 
 #[derive(Serialize, Deserialize, Default)]
@@ -86,6 +86,7 @@ fn crawl_directory<F: Send + Sync + Copy + Fn(&PathBuf, &TrackArgs, &mut mpsc::S
     Ok(out)
 }
 
+#[instrument(skip_all)]
 async fn handle_connection(
     mut stream: UnixStream,
     tx: mpsc::Sender<(Message, oneshot::Sender<Message>)>, // Send messages to daemon
@@ -98,38 +99,52 @@ async fn handle_connection(
             .ready(Interest::READABLE | Interest::WRITABLE)
             .await?;
 
-        info!("A");
-
-        if ready.is_readable() {
-            info!("Reading");
-            let mut message = Vec::new();
-            if let Ok(n) = stream.try_read_buf(&mut message) {}
-            if let Ok(message) = bincode::deserialize(&message)
-                .with_context(|| "Failed to parse message over socket")
-            {
-                let (otx, mut orx) = oneshot::channel();
-                info!(message=?message, "Recieved message");
-                tx.send((message, otx)).await?;
-                outbound.push_front(orx.try_recv().with_context(|| "Failed to read callback")?);
-            }
-        }
-
-        if ready.is_writable() && !outbound.is_empty() {
+        while ready.is_writable() && !outbound.is_empty() {
             info!("Writing");
-            let message = serde_json::to_string(&outbound.pop_back())
+            let message = serde_json::to_vec(&outbound.pop_back())
                 .with_context(|| "Failed to serialize message")?;
+            println!("{:?}", serde_json::from_slice::<Message>(&message.clone()));
+            info!(len=%message.len(), "Response length");
+            stream.write_u32(message.len() as u32).await?;
+            stream.flush().await?;
             stream
-                .write_all(message.into_bytes().to_byte_slice())
+                .write_all(&message)
                 .await
                 .with_context(|| "Unable to write to socket")?;
             stream
                 .flush()
                 .await
                 .with_context(|| "Unable to flush socket")?;
+            info!("Finished writing");
+        }
+
+        if ready.is_readable() {
+            info!("Reading");
+
+            let n = stream.read_u32().await?;
+            info!(len=?n, "Got message length");
+            let mut message = vec![0; n as usize];
+            let _ = stream.read_exact(&mut message).await?;
+
+            match serde_json::from_slice(&message)
+                .with_context(|| "Failed to parse message over socket")
+            {
+                Ok(message) => {
+                    let (otx, orx) = oneshot::channel();
+                    info!(message=?message, "Recieved message");
+                    tx.send((message, otx)).await?;
+                    let out = orx.await.with_context(|| "Failed to read callback")?;
+                    outbound.push_front(out);
+                }
+                Err(e) => error!(err=?e, "Failed to decode message"),
+            }
+
+            info!("Finished reading")
         }
     }
 }
 
+#[instrument(skip_all)]
 async fn get_config() -> Result<Config, Box<dyn Error + Send + Sync>> {
     let path = Path::new("/tmp/vs.config");
     Ok(if path.exists() && path.is_file() {
@@ -165,6 +180,7 @@ fn track(path: &PathBuf, args: &TrackArgs, tx: &mut mpsc::Sender<PathBuf>) {
     }
 }
 
+#[instrument(skip_all)]
 async fn maintainer(
     mut rx: mpsc::Receiver<(Message, oneshot::Sender<Message>)>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -183,16 +199,15 @@ async fn maintainer(
         match message {
             Message::Search(path) => todo!(),
             Message::Get(n) => {
-                response.send(Message::Paths(
-                    config
-                        .read()
-                        .await
-                        .tracked
-                        .iter()
-                        .cloned()
-                        .take(n)
-                        .collect(),
-                ));
+                let paths = config
+                    .read()
+                    .await
+                    .tracked
+                    .iter()
+                    .cloned()
+                    .take(n)
+                    .collect();
+                response.send(Message::Paths(paths)).unwrap();
             }
             Message::Track(path, args) => {
                 let args = args.clone();
@@ -239,11 +254,16 @@ async fn maintainer(
     Ok(())
 }
 
+#[instrument(skip_all)]
 async fn encoder(mut encoder_rx: mpsc::Receiver<PathBuf>, model: TextEmbedding) {
     let mut db = initialize_db().await.expect("Expected DB");
     loop {
         let mut buffer = Vec::<PathBuf>::new();
         let amount = encoder_rx.recv_many(&mut buffer, 100).await;
+        if amount == 0 {
+            warn!("Tried to encode nothing");
+            continue;
+        }
 
         let names = buffer
             .iter()
@@ -267,10 +287,11 @@ async fn encoder(mut encoder_rx: mpsc::Receiver<PathBuf>, model: TextEmbedding) 
             continue;
         };
 
-        insert_db(&mut db, &embeddings, &buffer);
+        // insert_db(&mut db, &embeddings, &buffer);
     }
 }
 
+#[instrument(skip_all)]
 async fn socket_listener(
     tx: mpsc::Sender<(Message, oneshot::Sender<Message>)>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -296,6 +317,7 @@ async fn socket_listener(
 }
 
 #[tokio::main]
+#[instrument(skip_all)]
 async fn main() {
     tracing_subscriber::fmt::init();
     let (tx, rx) = mpsc::channel::<(Message, oneshot::Sender<Message>)>(1);
@@ -311,6 +333,7 @@ async fn main() {
     error!(reason = ?e, "critical task closed, shutting down service");
 }
 
+#[instrument(skip_all)]
 async fn insert_db(db: &mut Connection, encodings: &Vec<Vec<f32>>, paths: &Vec<PathBuf>) {
     let amount = encodings.len();
     let schema = db_schema().await;
@@ -365,6 +388,7 @@ async fn insert_db(db: &mut Connection, encodings: &Vec<Vec<f32>>, paths: &Vec<P
     println!("{:?}", results);
 }
 
+#[instrument(skip_all)]
 async fn db_schema() -> Arc<Schema> {
     Arc::new(Schema::new(vec![
         Field::new("path", DataType::Utf8, false),
@@ -376,6 +400,7 @@ async fn db_schema() -> Arc<Schema> {
     ]))
 }
 
+#[instrument(skip_all)]
 async fn initialize_db() -> Result<Connection, Box<dyn Error>> {
     let db = lancedb::connect("/tmp/vs-db").execute().await?;
     let schema = db_schema().await;
