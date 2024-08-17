@@ -1,3 +1,4 @@
+use anyhow::anyhow;
 use anyhow::{Context, Result};
 use arrow::array::{
     Array, ArrayData, DictionaryArray, FixedSizeListArray, Int32Array, RecordBatch,
@@ -68,7 +69,7 @@ fn crawl_directory<F: Send + Sync + Copy + Fn(&PathBuf, &TrackArgs, &mut mpsc::S
     mut tx: mpsc::Sender<PathBuf>,
     f: F,
 ) -> io::Result<Vec<PathBuf>> {
-    info!(dir=%dir.display());
+    // info!(dir=%dir.display(), "Crawled");
     f(&dir, &args, &mut tx);
     let mut out = vec![dir.clone()];
     if dir.is_dir() && args.recursive && (!dir.is_symlink() || args.follow_symlinks) {
@@ -103,7 +104,6 @@ async fn handle_connection(
             info!("Writing");
             let message = serde_json::to_vec(&outbound.pop_back())
                 .with_context(|| "Failed to serialize message")?;
-            println!("{:?}", serde_json::from_slice::<Message>(&message.clone()));
             info!(len=%message.len(), "Response length");
             stream.write_u32(message.len() as u32).await?;
             stream.flush().await?;
@@ -180,14 +180,20 @@ fn track(path: &PathBuf, args: &TrackArgs, tx: &mut mpsc::Sender<PathBuf>) {
     }
 }
 
+fn untrack(path: &PathBuf, args: &TrackArgs) {}
+
 #[instrument(skip_all)]
 async fn maintainer(
     mut rx: mpsc::Receiver<(Message, oneshot::Sender<Message>)>,
-) -> Result<(), Box<dyn Error + Send + Sync>> {
+) -> anyhow::Result<()> {
     let model = TextEmbedding::try_new(Default::default())?;
     info!("Loaded model");
 
-    let mut config = Arc::new(RwLock::new(get_config().await?));
+    let mut config = Arc::new(RwLock::new(
+        get_config()
+            .await
+            .map_err(|e| anyhow!("Failed to get config"))?,
+    ));
     info!("Loaded Config");
 
     let (encoder_tx, mut encoder_rx) = mpsc::channel(1000);
@@ -197,7 +203,12 @@ async fn maintainer(
     while let Some((message, response)) = rx.recv().await {
         info!(message=?message, "Received message");
         match message {
-            Message::Search(path) => todo!(),
+            Message::Search(path) => {
+                let db = initialize_db().await.map_err(|e| anyhow!("Failed"))?;
+                response
+                    .send(Message::Confirmation)
+                    .map_err(|e| anyhow!("Failed to send response"))?;
+            }
             Message::Get(n) => {
                 let paths = config
                     .read()
@@ -207,26 +218,26 @@ async fn maintainer(
                     .cloned()
                     .take(n)
                     .collect();
-                response.send(Message::Paths(paths)).unwrap();
+                response
+                    .send(Message::Paths(paths))
+                    .map_err(|e| anyhow!("Failed to send response"))?;
             }
             Message::Track(path, args) => {
                 let args = args.clone();
-                info!("a");
                 let config = config.clone();
-                info!("b");
                 let encoder_tx = encoder_tx.clone();
-                info!("c");
                 let paths =
                     tokio_rayon::spawn(move || crawl_directory(path, args, encoder_tx, track))
                         .await
                         .unwrap_or_default();
-                info!("d");
 
                 // Track all paths
                 config.write().await.tracked.extend(paths);
                 config.read().await.save();
 
-                let _ = response.send(Message::Confirmation);
+                response
+                    .send(Message::Confirmation)
+                    .map_err(|e| anyhow!("Failed to send response"))?;
             }
             Message::Untrack(path, args) => {
                 let encoder_tx = encoder_tx.clone();
@@ -264,12 +275,16 @@ async fn encoder(mut encoder_rx: mpsc::Receiver<PathBuf>, model: TextEmbedding) 
             warn!("Tried to encode nothing");
             continue;
         }
+        info!(num_files=?amount, "Getting contents");
 
         let names = buffer
             .iter()
             .filter_map(|path| {
                 let name = path.file_name().map(|s| s.to_string_lossy().to_string());
-                if path.is_file() {
+                if path.is_file() && binaryornot::is_binary(path).unwrap_or(false) {
+                    warn!(bin=?path, "Skipping binary");
+                    None
+                } else if path.is_file() {
                     let Ok(mut file) = File::open(path) else {
                         return None;
                     };
@@ -283,11 +298,15 @@ async fn encoder(mut encoder_rx: mpsc::Receiver<PathBuf>, model: TextEmbedding) 
                 }
             })
             .collect();
+        info!("Starting encode");
+        println!("{:?}", names);
         let Ok(embeddings) = model.embed(names, Some(amount)) else {
+            warn!("Encoding failed");
             continue;
         };
+        info!("Finished Encoding");
 
-        // insert_db(&mut db, &embeddings, &buffer);
+        // insert_db(&mut db, embeddings, buffer).await;
     }
 }
 
@@ -334,7 +353,8 @@ async fn main() {
 }
 
 #[instrument(skip_all)]
-async fn insert_db(db: &mut Connection, encodings: &Vec<Vec<f32>>, paths: &Vec<PathBuf>) {
+async fn insert_db(db: &mut Connection, encodings: Vec<Vec<f32>>, paths: Vec<PathBuf>) {
+    let length = encodings[0].len();
     let amount = encodings.len();
     let schema = db_schema().await;
     // Create a RecordBatch stream.
@@ -350,8 +370,8 @@ async fn insert_db(db: &mut Connection, encodings: &Vec<Vec<f32>>, paths: &Vec<P
                 )),
                 Arc::new(
                     FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
-                        (0..256).map(|_| Some(vec![Some(1.0); 128])),
-                        128,
+                        encodings.iter().map(|v| Some(v.iter().map(|f| Some(*f)))),
+                        length as i32,
                     ),
                 ),
             ],
@@ -371,21 +391,19 @@ async fn insert_db(db: &mut Connection, encodings: &Vec<Vec<f32>>, paths: &Vec<P
             .unwrap(),
     };
 
-    let mut options = QueryExecutionOptions::default();
-    options.max_batch_length = 1;
-    let results = tbl
-        .query()
-        .nearest_to(&[1.0; 128])
-        .unwrap()
-        .limit(1)
-        .execute()
-        .await
-        .unwrap()
-        .try_collect::<Vec<_>>()
-        .await
-        .unwrap();
-
-    println!("{:?}", results);
+    // let mut options = QueryExecutionOptions::default();
+    // options.max_batch_length = 1;
+    // let results = tbl
+    //     .query()
+    //     .nearest_to(&[1.0; 128])
+    //     .unwrap()
+    //     .limit(1)
+    //     .execute()
+    //     .await
+    //     .unwrap()
+    //     .try_collect::<Vec<_>>()
+    //     .await
+    //     .unwrap();
 }
 
 #[instrument(skip_all)]

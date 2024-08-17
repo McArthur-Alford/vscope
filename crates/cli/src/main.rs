@@ -4,10 +4,10 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use ratatui::backend::CrosstermBackend;
 use ratatui::{style::Stylize, widgets::Widget, Terminal};
-use std::io;
 use std::io::stdout;
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::{fs, io};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use vs_core::{connect_to_daemon, Message, TrackArgs};
 
@@ -48,7 +48,16 @@ mod tui;
 #[tokio::main]
 async fn main() -> Result<()> {
     let mut connection = connect_to_daemon().await?;
-    let message = Message::Get(10);
+    let message = Message::Track(
+        fs::canonicalize("./crates".to_owned())?,
+        TrackArgs {
+            recursive: true,
+            follow_symlinks: false,
+        },
+    );
+    println!("{:?}", connection.communicate(message).await);
+
+    let message = Message::Search("magic".into());
     println!("{:?}", connection.communicate(message).await);
     return Ok(());
 
@@ -77,7 +86,7 @@ async fn main() -> Result<()> {
         let mut terminal = tui::init().context("Failed to init terminal")?;
         let app_result = AppInteractive::default().run(&mut terminal);
         tui::restore()?;
-        
+
         app_result
             .map(|opt| opt.map(|path| print!("{}", path)))
             .context("App result was err")?;
