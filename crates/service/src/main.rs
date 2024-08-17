@@ -1,7 +1,7 @@
 use anyhow::anyhow;
 use anyhow::{Context, Result};
 use arrow::array::{
-    Array, ArrayData, DictionaryArray, FixedSizeListArray, Int32Array, RecordBatch,
+    Array, ArrayData, DictionaryArray, FixedSizeListArray, Float32Array, Int32Array, RecordBatch,
     RecordBatchIterator, StringArray,
 };
 use arrow::datatypes::{DataType, Field, Float32Type, Schema, ToByteSlice, Utf8Type};
@@ -10,7 +10,7 @@ use axum::extract::FromRef;
 use fastembed::{TextEmbedding, TextRerank};
 use futures_util::TryStreamExt;
 use lancedb::query::{ExecutableQuery, QueryBase, QueryExecutionOptions};
-use lancedb::Connection;
+use lancedb::{Connection, Table};
 use rayon::iter::{ParallelBridge, ParallelExtend, ParallelIterator};
 use serde::{Deserialize, Serialize};
 use std::char;
@@ -39,6 +39,7 @@ struct Config {
 
 impl Config {
     fn save(&self) {
+        info!("Beginning config save");
         let message = match serde_json::to_string(self) {
             Ok(message) => message,
             Err(e) => {
@@ -60,6 +61,7 @@ impl Config {
                 error!(error=?e, "Unable to open vs.config for saving");
             }
         }
+        info!("Finished config save");
     }
 }
 
@@ -69,7 +71,7 @@ fn crawl_directory<F: Send + Sync + Copy + Fn(&PathBuf, &TrackArgs, &mut mpsc::S
     mut tx: mpsc::Sender<PathBuf>,
     f: F,
 ) -> io::Result<Vec<PathBuf>> {
-    info!(dir=%dir.display(), "Crawled");
+    // info!(dir=%dir.display(), "Crawled");
     f(&dir, &args, &mut tx);
     let mut out = vec![dir.clone()];
     if dir.is_dir() && args.recursive && (!dir.is_symlink() || args.follow_symlinks) {
@@ -131,7 +133,7 @@ async fn handle_connection(
             {
                 Ok(message) => {
                     let (otx, orx) = oneshot::channel();
-                    info!(message=?message, "Recieved message");
+                    info!(message=?message, "Received message");
                     tx.send((message, otx)).await?;
                     let out = orx.await.with_context(|| "Failed to read callback")?;
                     outbound.push_front(out);
@@ -197,20 +199,22 @@ async fn maintainer(
 
     let (encoder_tx, mut encoder_rx) = mpsc::channel(1000);
     tokio::task::spawn(encoder(encoder_rx, model));
+    tokio::task::spawn(db_indexer());
 
     let mut got = Vec::new();
     let model = TextEmbedding::try_new(Default::default())?;
     info!("Starting maintainer");
     while let Some((message, response)) = rx.recv().await {
-        info!(message=?message, "Received message");
+        info!(message=?message, "Maintainer Received message");
         match message {
             Message::Search(path) => {
+                info!("Handling search");
                 let query = model.embed(vec![path], None)?.get(0).unwrap().clone();
-                info!(query=?query, "Got query");
                 got = db_get(&mut db, query).await?;
                 response
                     .send(Message::Confirmation)
                     .map_err(|e| anyhow!("Failed to send response"))?;
+                info!("Finished search");
             }
             Message::Get(n) => {
                 let paths = got.iter().cloned().take(n).collect();
@@ -235,10 +239,15 @@ async fn maintainer(
                 info!(path=?path2, "Finished crawling for track");
 
                 // Track all paths
-                config.write().await.tracked.extend(paths);
+                {
+                    config.write().await.tracked.extend(paths);
+                }
                 config.read().await.save();
+
+                db_index(&mut db).await;
             }
             Message::Untrack(path, args) => {
+                info!("Handling untrack");
                 response
                     .send(Message::Confirmation)
                     .map_err(|e| anyhow!("Failed to send response"))?;
@@ -249,14 +258,20 @@ async fn maintainer(
                 })
                 .await
                 .unwrap_or_default();
+                info!("Finished crawling for untrack");
 
+                println!("{:?}", paths);
                 // Untrack the paths
-                let tracked = &mut config.write().await.tracked;
-                for item in paths {
-                    tracked.remove(&item);
+                {
+                    let tracked = &mut config.write().await.tracked;
+                    for item in &paths {
+                        tracked.remove(item);
+                    }
+                    db_remove(&mut db, paths).await;
                 }
 
                 config.read().await.save();
+                info!("Finished untrack");
             }
             Message::Paths(_) => panic!(),
             Message::Confirmation => panic!(),
@@ -268,13 +283,18 @@ async fn maintainer(
 #[instrument(skip_all)]
 async fn encoder(mut encoder_rx: mpsc::Receiver<PathBuf>, model: TextEmbedding) {
     let mut db = initialize_db().await.expect("Expected DB");
+    let mut zc = 0;
     loop {
         let mut buffer = Vec::<PathBuf>::new();
-        let amount = encoder_rx.recv_many(&mut buffer, 100).await;
+        let amount = encoder_rx.recv_many(&mut buffer, 10).await;
         if amount == 0 {
-            warn!("Tried to encode nothing");
+            zc += 1;
+            if zc % 100 == 0 {
+                warn!(times=?zc, "Tried to encode nothing several times");
+            }
             continue;
         }
+        zc = 0;
         info!(num_files=?amount, "Getting contents");
 
         let names = buffer
@@ -282,8 +302,8 @@ async fn encoder(mut encoder_rx: mpsc::Receiver<PathBuf>, model: TextEmbedding) 
             .filter_map(|path| {
                 let name = path.file_name().map(|s| s.to_string_lossy().to_string());
                 if path.is_file() && binaryornot::is_binary(path).unwrap_or(false) {
-                    warn!(bin=?path, "Skipping binary");
-                    None
+                    // warn!(bin=?path, "Skipping binary");
+                    name
                 } else if path.is_file() {
                     let Ok(mut file) = File::open(path) else {
                         return None;
@@ -301,7 +321,7 @@ async fn encoder(mut encoder_rx: mpsc::Receiver<PathBuf>, model: TextEmbedding) 
                 } else if path.is_dir() {
                     name
                 } else {
-                    None
+                    name
                 }
             })
             .collect();
@@ -360,6 +380,9 @@ async fn main() {
 
 #[instrument(skip_all)]
 async fn insert_db(db: &mut Connection, encodings: Vec<Vec<f32>>, paths: Vec<PathBuf>) {
+    if encodings.len() == 0 {
+        return;
+    }
     let length = encodings[0].len();
     let amount = encodings.len();
     let schema = db_schema().await;
@@ -397,30 +420,68 @@ async fn insert_db(db: &mut Connection, encodings: Vec<Vec<f32>>, paths: Vec<Pat
             .unwrap(),
     };
 
-    tbl.add(batches);
+    if let Err(e) = tbl.add(batches).execute().await {
+        error!(err=?e, "Unable to add batches");
+    }
+}
+
+#[instrument(skip_all)]
+async fn db_indexer() -> anyhow::Result<()> {
+    let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(100));
+    let mut db = initialize_db()
+        .await
+        .map_err(|e| anyhow!("Indexer failed to connect to db"))?;
+    loop {
+        interval.tick().await;
+        info!("Beginning automatic index");
+        if let Err(e) = db_index(&mut db).await {
+            error!(error=?e, "Failed to index db");
+        }
+        info!("Finished automatic index");
+    }
+    Ok(())
+}
+
+#[instrument(skip_all)]
+async fn db_index(db: &mut Connection) -> anyhow::Result<()> {
+    let tbl = db_get_table(db).await?;
+    let rows = tbl.count_rows(None).await?;
+    if rows < 256 {
+        warn!(rows=?rows, "Not enough rows yet to index");
+        return Ok(());
+    }
+    if let Err(e) = tbl
+        .create_index(&["vector"], lancedb::index::Index::Auto)
+        .execute()
+        .await
+    {
+        error!(error=?e, "Failed to create index");
+        return Err(anyhow!("Failed to create index"));
+    }
+    info!("Index updated");
+    Ok(())
+}
+
+#[instrument(skip_all)]
+async fn db_get_table(db: &mut Connection) -> anyhow::Result<Table> {
+    let schema = db_schema().await;
+    let tbl = match db.open_table("index").execute().await {
+        Ok(tbl) => tbl,
+        Err(e) => db.create_empty_table("index", schema).execute().await?,
+    };
+    Ok(tbl)
 }
 
 #[instrument(skip_all)]
 async fn db_get(db: &mut Connection, query: Vec<f32>) -> anyhow::Result<Vec<PathBuf>> {
-    let schema = db_schema().await;
-    let tbl = match db.open_table("index").execute().await {
-        Ok(tbl) => tbl,
-        Err(e) => db
-            .create_empty_table("index", schema)
-            .execute()
-            .await
-            .unwrap(),
-    };
-
-    tbl.create_index(&["vector"], lancedb::index::Index::Auto)
-        .execute()
-        .await?;
+    info!("DB_GET");
+    let tbl = db_get_table(db).await?;
 
     let mut options = QueryExecutionOptions::default();
     options.max_batch_length = 1;
     let results = tbl
         .query()
-        .nearest_to(&[1.0; 128])
+        .nearest_to(query.as_slice())
         .unwrap()
         .limit(1)
         .execute()
@@ -430,13 +491,20 @@ async fn db_get(db: &mut Connection, query: Vec<f32>) -> anyhow::Result<Vec<Path
         .await
         .unwrap();
 
-    println!("{:?}", results);
-    todo!()
-    // results.iter().map(|e| ).collect()
+    let b = results.get(0).unwrap();
+    let cols = b.columns();
+    let names = cols[0].as_any().downcast_ref::<StringArray>().unwrap();
+    let ranks = cols[2].as_any().downcast_ref::<Float32Array>().unwrap();
+
+    Ok(names
+        .iter()
+        .filter_map(|t| t)
+        .filter_map(|t| PathBuf::from_str(t).ok())
+        .collect::<Vec<_>>())
 }
 
 #[instrument(skip_all)]
-async fn db_remove(db: &mut Connection, paths: HashSet<PathBuf>) {}
+async fn db_remove(db: &mut Connection, paths: Vec<PathBuf>) {}
 
 #[instrument(skip_all)]
 async fn db_schema() -> Arc<Schema> {
