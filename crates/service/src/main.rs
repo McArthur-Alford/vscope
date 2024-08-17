@@ -19,7 +19,7 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::select;
 use tokio::sync::{broadcast, mpsc, oneshot, Mutex, RwLock};
 use tracing::{error, info, warn};
-use vs_core::Message;
+use vs_core::{Message, TrackArgs};
 
 #[derive(Serialize, Deserialize, Default)]
 struct Config {
@@ -52,19 +52,28 @@ impl Config {
     }
 }
 
-fn crawl_directory<T: Send + Sync>(dir: PathBuf, f: fn(PathBuf) -> T) -> io::Result<Vec<T>> {
-    if dir.is_dir() {
-        let entries = read_dir(dir)?;
-        let results = entries
-            .par_bridge()
-            .filter_map(Result::ok)
-            .filter_map(|p| crawl_directory(p.path(), f).ok())
-            .flatten()
-            .collect::<Vec<_>>();
-        Ok(results)
-    } else {
-        Ok(vec![f(dir)])
+fn crawl_directory<T: Send + Sync>(
+    dir: PathBuf,
+    args: TrackArgs,
+    f: fn(&PathBuf, &TrackArgs) -> Option<T>,
+) -> io::Result<Vec<T>> {
+    let mut out = match f(&dir, &args) {
+        Some(t) => vec![t],
+        None => Vec::new(),
+    };
+    if dir.is_dir() && args.recursive && (!dir.is_symlink() || args.follow_symlinks) {
+        out.extend({
+            let entries = read_dir(dir)?;
+            let results = entries
+                .par_bridge()
+                .filter_map(Result::ok)
+                .filter_map(|p| crawl_directory(p.path(), args.clone(), f).ok())
+                .flatten()
+                .collect::<Vec<T>>();
+            results
+        });
     }
+    Ok(out)
 }
 
 async fn handle_connection(
@@ -125,18 +134,21 @@ async fn get_config() -> Result<Config, Box<dyn Error + Send + Sync>> {
     })
 }
 
-fn track(path: PathBuf, args: TrackArgs) -> PathBuf {
+fn track(path: &PathBuf, args: &TrackArgs) -> Option<PathBuf> {
     // Embed the path and save it to the database
     if !path.exists() {
-        return path;
+        return None;
     }
 
-    if path.is_symlink() {}
-    if path.is_dir() {}
-    if path.is_file() {}
+    if path.is_dir() && !args.recursive {
+        // Embed the name
+    }
+    if path.is_file() {
+        // Embed the name + contents
+    }
 
     // Return the path for tracking
-    path
+    Some(path.clone())
 }
 
 async fn maintainer(
@@ -153,9 +165,9 @@ async fn maintainer(
         match message {
             Message::Search(_) => todo!(),
             Message::Get(_) => todo!(),
-            Message::Track(path) => {
+            Message::Track(path, args) => {
                 let config = config.clone();
-                let paths = tokio_rayon::spawn(|| crawl_directory(path, track))
+                let paths = tokio_rayon::spawn(|| crawl_directory(path, args, track))
                     .await
                     .unwrap_or_default();
 
