@@ -1,7 +1,7 @@
 use crate::app_cli::AppCLI;
 use crate::app_interactive::AppInteractive;
-use anyhow::{Context, Result};
-use clap::{Args, Parser, Subcommand};
+use anyhow::{anyhow, Context, Result};
+use clap::{Args, Parser, Subcommand, ValueHint};
 use ratatui::backend::CrosstermBackend;
 use ratatui::{style::Stylize, widgets::Widget, Terminal};
 use std::io::stdout;
@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::{fs, io};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use Message::Confirmation;
 use vs_core::{connect_to_daemon, Message, TrackArgs};
 use crate::Commands::Search;
 
@@ -70,7 +71,7 @@ mod app_interactive;
 mod tui;
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> anyhow::Result<()> {
     // let mut connection = connect_to_daemon().await?;
     // let message = Message::Track(
     //     fs::canonicalize("./crates".to_owned())?,
@@ -82,28 +83,45 @@ async fn main() -> Result<()> {
     // println!("{:?}", connection.communicate(message).await);
 
     let args = Cli::parse();
-
-    println!("{:?}", args);
     
     let mut connection = connect_to_daemon().await?;
 
     match &args.command {
         Some(Commands::Track {path}) => {
             if !path.exists() {
-                panic!("Provided path does not exist")
+                return anyhow::bail!("Path does not exist");
             }
             println!("Tracking directory: {}", path.display());
             
-            Ok(())
-            // Add your tracking logic here
+            let message = Message::Track(path.clone(), TrackArgs::default());
+            let response = connection.communicate(message).await?;
+            
+            match response {
+                Confirmation => {
+                    Ok(())
+                }
+                _ => {
+                    anyhow::bail!("Unexpected response");
+                }
+            }
         }
         Some(Commands::Untrack {path}) => {
             if !path.exists() {
-                panic!("Provided path does not exist")
+                return anyhow::bail!("Path does not exist");
             }
             println!("Untracking directory: {}", path.display());
-            Ok(())
-            // Add your untracking logic here
+
+            let message = Message::Untrack(path.clone(), TrackArgs::default());
+            let response = connection.communicate(message).await?;
+
+            match response {
+                Confirmation => {
+                    Ok(())
+                }
+                _ => {
+                    anyhow::bail!("Unexpected response");
+                }
+            }
         }
         Some(Commands::Search(args)) => {
             main_command(args).await
