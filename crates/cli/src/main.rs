@@ -15,27 +15,31 @@ use crate::Commands::Search;
 #[derive(Parser, Debug)]
 #[command(name = "vs", version, about, long_about = None)]
 #[clap(args_conflicts_with_subcommands = true)]
-struct Cli {    
+struct Cli {
+    #[clap(flatten)]
+    search: Option<SearchArgs>,
+    
     #[command(subcommand)]
     command: Option<Commands>,
-    
-    #[clap(flatten)]
-    search: Box<SearchArgs>
 }
 
 #[derive(Subcommand, Debug)]
 enum Commands {
     Search(SearchArgs),
     Track {
+        #[arg(value_hint = ValueHint::AnyPath)]
         path: PathBuf,
     },
     Untrack {
+        #[arg(value_hint = ValueHint::AnyPath)]
         path: PathBuf,
     },
 }
 
 #[derive(Args, Debug)]
 struct SearchArgs {
+    query: String,
+    
     /// Recurse into directories and symlinks.
     #[arg(short, long)]
     recurse: bool,
@@ -59,8 +63,6 @@ struct SearchArgs {
     /// Output results in a tabular format.
     #[arg(short, long)]
     list: bool,
-
-    query: String,
 }
 
 mod app_cli;
@@ -82,16 +84,22 @@ async fn main() -> Result<()> {
     let args = Cli::parse();
 
     println!("{:?}", args);
+    
+    let mut connection = connect_to_daemon().await?;
 
     match &args.command {
         Some(Commands::Track {path}) => {
+            if !path.exists() {
+                panic!("Provided path does not exist")
+            }
             println!("Tracking directory: {}", path.display());
+            
             Ok(())
             // Add your tracking logic here
         }
         Some(Commands::Untrack {path}) => {
             if !path.exists() {
-                panic!("Provided search directory does not exist")
+                panic!("Provided path does not exist")
             }
             println!("Untracking directory: {}", path.display());
             Ok(())
@@ -101,11 +109,7 @@ async fn main() -> Result<()> {
             main_command(args).await
         }
         _ => {
-            match *args.search {
-                args => {
-                    main_command(&args).await
-                }
-            }
+            main_command(&args.search.unwrap()).await
         }
     }
 }
