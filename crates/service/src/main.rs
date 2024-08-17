@@ -18,7 +18,7 @@ use std::collections::{HashSet, VecDeque};
 use std::env::args;
 use std::error::Error;
 use std::fs::{File, OpenOptions};
-use std::io::{BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::Path;
 use std::str::Chars;
 use std::sync::atomic::AtomicUsize;
@@ -285,12 +285,19 @@ async fn encoder(mut encoder_rx: mpsc::Receiver<PathBuf>, model: TextEmbedding) 
                     warn!(bin=?path, "Skipping binary");
                     None
                 } else if path.is_file() {
-                    let Ok(mut file) = BufReader::new(File::open(path)?) else {
+                    let Ok(mut file) = File::open(path) else {
                         return None;
                     };
-                    let mut contents = String::new();
-                    let _ = file.read_to_string(&mut contents);
-                    Some([name.unwrap_or("".to_string()), contents].join(": "))
+                    let mut reader = BufReader::new(file);
+                    let mut buf = vec![0u8; 1000];
+                    reader.read_exact(&mut buf).ok()?;
+                    let buf = buf
+                        .iter()
+                        .filter_map(|c| char::from_u32(*c as u32))
+                        .collect();
+                    // let mut contents = String::new();
+                    // let _ = file.read_to_string(&mut contents);
+                    Some([name.unwrap_or("".to_string()), buf].join(": "))
                 } else if path.is_dir() {
                     name
                 } else {
