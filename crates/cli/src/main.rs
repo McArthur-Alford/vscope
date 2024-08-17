@@ -14,14 +14,17 @@ use crate::Commands::Search;
 
 #[derive(Parser, Debug)]
 #[command(name = "vs", version, about, long_about = None)]
+#[clap(args_conflicts_with_subcommands = true)]
 struct Cli {    
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
+    
+    #[clap(flatten)]
+    search: Box<SearchArgs>
 }
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    #[command(name="s")]
     Search(SearchArgs),
     Track {
         path: PathBuf,
@@ -81,12 +84,12 @@ async fn main() -> Result<()> {
     println!("{:?}", args);
 
     match &args.command {
-        Commands::Track {path} => {
+        Some(Commands::Track {path}) => {
             println!("Tracking directory: {}", path.display());
             Ok(())
             // Add your tracking logic here
         }
-        Commands::Untrack {path} => {
+        Some(Commands::Untrack {path}) => {
             if !path.exists() {
                 panic!("Provided search directory does not exist")
             }
@@ -94,8 +97,15 @@ async fn main() -> Result<()> {
             Ok(())
             // Add your untracking logic here
         }
-        Commands::Search(args) => {
+        Some(Commands::Search(args)) => {
             main_command(args).await
+        }
+        _ => {
+            match *args.search {
+                args => {
+                    main_command(&args).await
+                }
+            }
         }
     }
 }
