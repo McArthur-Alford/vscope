@@ -53,6 +53,12 @@ impl AppInteractive {
             Message::Paths(paths) => { paths },
             invalid => { panic!("Received incorrect response from daemon: {:?}", invalid) }
         };
+        
+        if paths.len() != 10 {
+            panic!("Received less than 10 paths: ({}) {}", 
+                paths.len(),
+                   paths.iter().map(|path| path.display().to_string()).collect::<Vec<String>>().join(", "));
+        }
 
         self.items = StatefulList::with_items(paths);
 
