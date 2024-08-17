@@ -8,8 +8,9 @@ use std::io::stdout;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::{fs, io};
+use std::sync::Mutex;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use vs_core::{connect_to_daemon, Message, TrackArgs};
+use vs_core::{connect_to_daemon, Connection, Message, TrackArgs};
 use Message::Confirmation;
 
 #[derive(Parser, Debug)]
@@ -56,9 +57,9 @@ struct SearchArgs {
     #[arg(short, long, default_value = "*")]
     filter: String,
 
-    /// Show search output inline.
-    #[arg(short, long)]
-    inline: bool,
+    /// Show <value> search results inline.
+    #[arg(short, long, default_value = 20)]
+    inline: usize,
 
     /// Output results in a tabular format.
     #[arg(short, long)]
@@ -110,7 +111,7 @@ async fn main() -> anyhow::Result<()> {
             if !path.exists() {
                 return anyhow::bail!("Path does not exist");
             }
-            println!("Untracking directory: {}", path.display());
+            println!("No longer tracking directory: {}", path.display());
 
             let message = Message::Untrack(
                 fs::canonicalize(path.clone().to_owned())?,
@@ -125,19 +126,26 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
-        Some(Commands::Search(args)) => main_command(args).await,
-        _ => main_command(&args.search.unwrap()).await,
+        Some(Commands::Search(args)) => main_command(args, connection).await,
+        _ => main_command(&args.search.unwrap(), connection).await,
     }
 }
 
-async fn main_command(args: &SearchArgs) -> Result<()> {
+async fn main_command(args: &SearchArgs, mut connection: Connection) -> Result<()> {
     if args.inline {
-        Ok(())
-        // if args.list {
-        //     AppCLI::render_list().context("Failed to render list")
-        // } else {
-        //     AppCLI::render(&message).context("Failed to render")
-        // }
+        let message = Message::Get(args.inline);
+        let response = connection.communicate(message).await?;
+        
+        let paths = match response {
+            Message::Paths(paths) => paths,
+            _ => { anyhow::bail!("Unexpected response"); }
+        };
+        
+        if args.list {
+            AppCLI::render_list(&paths).context("Failed to render list")
+        } else {
+            AppCLI::render(&paths).context("Failed to render")
+        }
     } else {
         let mut terminal = tui::init().context("Failed to init terminal")?;
         let app_result = AppInteractive::default().run(&mut terminal).await;
