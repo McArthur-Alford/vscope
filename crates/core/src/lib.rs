@@ -1,5 +1,7 @@
+use anyhow::{Context, Error};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::{path::PathBuf, str::FromStr};
+use tokio::{net::UnixStream, stream};
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub enum Message {
@@ -24,4 +26,11 @@ impl Default for TrackArgs {
             follow_symlinks: false,
         }
     }
+}
+
+pub async fn connect_to_daemon() -> anyhow::Result<UnixStream> {
+    let bind_path = PathBuf::from_str("/tmp/vs.sock")?;
+    UnixStream::connect(bind_path)
+        .await
+        .context("Failed to connect to daemon")
 }

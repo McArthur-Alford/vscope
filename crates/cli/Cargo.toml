@@ -7,3 +7,5 @@ edition = "2021"
 ratatui.workspace = true
 vs-core.workspace = true
 clap.workspace = true
+tokio.workspace = true
+anyhow.workspace = true

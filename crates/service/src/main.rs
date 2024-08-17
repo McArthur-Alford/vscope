@@ -197,9 +197,11 @@ async fn maintainer(
                 }
 
                 config.read().await.save();
+
+                let _ = response.send(Message::Confirmation);
             }
-            Message::Paths(_) => todo!(),
-            Message::Confirmation => todo!(),
+            Message::Paths(_) => panic!(),
+            Message::Confirmation => panic!(),
         };
     }
     Ok(())

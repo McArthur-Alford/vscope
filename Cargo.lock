@@ -1082,8 +1082,10 @@ checksum = "1462739cb27611015575c0c11df5df7601141071f07518d56fcc1be504cbec97"
 name = "cli"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "clap",
  "ratatui",
+ "tokio",
  "vs-core",
 ]
 
@@ -5548,8 +5550,10 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 name = "vs-core"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "serde",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]
