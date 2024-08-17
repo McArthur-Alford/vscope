@@ -1,7 +1,7 @@
 use crate::app_cli::AppCLI;
 use crate::app_interactive::AppInteractive;
 use anyhow::{Context, Result};
-use clap::Parser;
+use clap::{Args, Parser, Subcommand};
 use ratatui::backend::CrosstermBackend;
 use ratatui::{style::Stylize, widgets::Widget, Terminal};
 use std::io::stdout;
@@ -10,12 +10,29 @@ use std::str::FromStr;
 use std::{fs, io};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use vs_core::{connect_to_daemon, Message, TrackArgs};
+use crate::Commands::Search;
 
 #[derive(Parser, Debug)]
-#[command(version, about, long_about = None)]
-struct Args {
-    search: PathBuf,
+#[command(name = "vs", version, about, long_about = None)]
+struct Cli {    
+    #[command(subcommand)]
+    command: Commands,
+}
 
+#[derive(Subcommand, Debug)]
+enum Commands {
+    #[command(name="s")]
+    Search(SearchArgs),
+    Track {
+        path: PathBuf,
+    },
+    Untrack {
+        path: PathBuf,
+    },
+}
+
+#[derive(Args, Debug)]
+struct SearchArgs {
     /// Recurse into directories and symlinks.
     #[arg(short, long)]
     recurse: bool,
@@ -39,6 +56,8 @@ struct Args {
     /// Output results in a tabular format.
     #[arg(short, long)]
     list: bool,
+
+    query: String,
 }
 
 mod app_cli;
@@ -47,44 +66,51 @@ mod tui;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let mut connection = connect_to_daemon().await?;
-    let message = Message::Track(
-        fs::canonicalize("./crates".to_owned())?,
-        TrackArgs {
-            recursive: true,
-            follow_symlinks: false,
-        },
-    );
-    println!("{:?}", connection.communicate(message).await);
+    // let mut connection = connect_to_daemon().await?;
+    // let message = Message::Track(
+    //     fs::canonicalize("./crates".to_owned())?,
+    //     TrackArgs {
+    //         recursive: true,
+    //         follow_symlinks: false,
+    //     },
+    // );
+    // println!("{:?}", connection.communicate(message).await);
 
-    let message = Message::Search("magic".into());
-    println!("{:?}", connection.communicate(message).await);
-    return Ok(());
-
-    let buffs = ["/mnt/d/", "/mnt/d/vs-scope"]
-        .iter()
-        .map(|path| PathBuf::from(path))
-        .collect();
-
-    let message = Message::Paths(buffs);
-
-    let args = Args::parse();
+    let args = Cli::parse();
 
     println!("{:?}", args);
 
-    if !args.search.exists() {
-        panic!("Provided search directory does not exist")
-    }
-
-    if args.inline {
-        if args.list {
-            AppCLI::render_list(&message).context("Failed to render list")
-        } else {
-            AppCLI::render(&message).context("Failed to render")
+    match &args.command {
+        Commands::Track {path} => {
+            println!("Tracking directory: {}", path.display());
+            Ok(())
+            // Add your tracking logic here
         }
+        Commands::Untrack {path} => {
+            if !path.exists() {
+                panic!("Provided search directory does not exist")
+            }
+            println!("Untracking directory: {}", path.display());
+            Ok(())
+            // Add your untracking logic here
+        }
+        Commands::Search(args) => {
+            main_command(args).await
+        }
+    }
+}
+
+async fn main_command(args: &SearchArgs) -> Result<()> {
+    if args.inline {
+        Ok(())
+        // if args.list {
+        //     AppCLI::render_list().context("Failed to render list")
+        // } else {
+        //     AppCLI::render(&message).context("Failed to render")
+        // }
     } else {
         let mut terminal = tui::init().context("Failed to init terminal")?;
-        let app_result = AppInteractive::default().run(&mut terminal);
+        let app_result = AppInteractive::default().run(&mut terminal).await;
         tui::restore()?;
 
         app_result

@@ -2,6 +2,7 @@ use crate::tui;
 use std::io;
 use std::io::{Error, ErrorKind};
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::Mutex;
 use anyhow::anyhow;
 use ratatui::{
@@ -21,6 +22,7 @@ use ratatui::layout::{Direction, Layout};
 use ratatui::prelude::{Color, Style, Modifier, Constraint, StatefulWidget};
 use ratatui::symbols::block;
 use ratatui::widgets::{Borders, HighlightSpacing, List, ListDirection, ListItem, ListState};
+use vs_core::{connect_to_daemon, Message, TrackArgs};
 use crate::app_interactive::AppEvent::Run;
 
 #[derive(Debug, Default)]
@@ -39,22 +41,26 @@ enum AppEvent {
     #[default]
     Run,
     Quit,
-    Save
+    Save,
 }
 
 impl AppInteractive {
     /// runs the application's main loop until the user quits
-    pub fn run(&mut self, terminal: &mut tui::Tui) -> anyhow::Result<Option<String>> {
-        self.items = StatefulList::with_items(["~/home/src/", "~/home/src/vscope", "~/home/src/"]
-            .iter()
-            .map(|path| PathBuf::from(path))
-            .collect());
-        
+    pub async fn run(&mut self, terminal: &mut tui::Tui) -> anyhow::Result<Option<String>> {
+        let mut connection = connect_to_daemon().await?;
+        let message = Message::Get(10);
+        let paths = match connection.communicate(message).await? {
+            Message::Paths(paths) => { paths },
+            invalid => { panic!("Received incorrect response from daemon: {:?}", invalid) }
+        };
+
+        self.items = StatefulList::with_items(paths);
+
         while matches!(self.status, Run) {
             terminal.draw(|frame| self.render_frame(frame))?;
             self.handle_events()?;
         }
-        
+
         match self.status {
             AppEvent::Save => {
                 let test = self.items
@@ -63,7 +69,7 @@ impl AppInteractive {
                     .map(|selected| self.items.items.get(selected)
                         .unwrap_or(&PathBuf::from("magic")).display().to_string());
                 Ok(test)
-            },
+            }
             AppEvent::Quit => {
                 Ok(Some("Test".to_string()))
             }
@@ -102,7 +108,7 @@ impl AppInteractive {
     fn save(&mut self) {
         self.status = AppEvent::Save;
     }
-    
+
     fn exit(&mut self) {
         self.status = AppEvent::Quit;
     }
@@ -121,7 +127,7 @@ impl Widget for &mut AppInteractive {
             " Quit ".into(),
             "<Q>".blue().bold(),
         ]));
-        
+
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
@@ -129,7 +135,7 @@ impl Widget for &mut AppInteractive {
                 Constraint::Percentage(67),
             ].as_ref())
             .split(area);
-        
+
         let block = Block::bordered()
             .title(app_title.alignment(Alignment::Center))
             .title(
@@ -174,9 +180,9 @@ impl Widget for &mut AppInteractive {
             .highlight_spacing(HighlightSpacing::Always);
 
         let block2 = Block::bordered().borders(Borders::RIGHT);
-        
+
         block2.render(chunks[0], buf);
-        
+
         StatefulWidget::render(list, list_area[0], buf, &mut self.items.state);
 
         Paragraph::new(counter_text)
@@ -191,7 +197,7 @@ impl StatefulList {
     fn with_items(items: Vec<PathBuf>) -> StatefulList {
         StatefulList {
             state: ListState::default(),
-            items: items.iter().cloned().collect()
+            items: items.iter().cloned().collect(),
         }
     }
 
