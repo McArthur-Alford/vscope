@@ -7,7 +7,9 @@ use ratatui::{style::Stylize, widgets::Widget, Terminal};
 use std::io;
 use std::io::stdout;
 use std::path::PathBuf;
-use vs_core::{connect_to_daemon, Message};
+use std::str::FromStr;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use vs_core::{connect_to_daemon, Message, TrackArgs};
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -45,7 +47,13 @@ mod tui;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let connection = connect_to_daemon().await?;
+    let mut connection = connect_to_daemon().await?;
+    let message = Message::Track(
+        PathBuf::from_str("/home/mcarthur/Development/hackathon/crates")?,
+        TrackArgs::default(),
+    );
+    println!("{:?}", connection.communicate(message).await);
+    return Ok(());
 
     let buffs = ["/mnt/d/", "/mnt/d/vs-scope"]
         .iter()

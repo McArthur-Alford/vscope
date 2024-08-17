@@ -5,12 +5,14 @@ use fastembed::{TextEmbedding, TextRerank};
 use lancedb::Connection;
 use rayon::iter::{ParallelBridge, ParallelExtend, ParallelIterator};
 use serde::{Deserialize, Serialize};
+use std::char;
 use std::collections::{HashSet, VecDeque};
 use std::env::args;
 use std::error::Error;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::Path;
+use std::str::Chars;
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 use std::{fs::read_dir, io, path::PathBuf, str::FromStr};
@@ -39,7 +41,7 @@ impl Config {
 
         let path = Path::new("/tmp/vs.config");
         let mut opts = OpenOptions::new();
-        opts.write(true).truncate(true);
+        opts.write(true).truncate(true).create(true);
         match opts.open(path) {
             Ok(mut file) => {
                 if let Err(e) = file.write(message.into_bytes().to_byte_slice()) {
@@ -59,6 +61,7 @@ fn crawl_directory<F: Send + Sync + Copy + Fn(&PathBuf, &TrackArgs, &mut mpsc::S
     mut tx: mpsc::Sender<PathBuf>,
     f: F,
 ) -> io::Result<Vec<PathBuf>> {
+    info!(dir=%dir.display());
     f(&dir, &args, &mut tx);
     let mut out = vec![dir.clone()];
     if dir.is_dir() && args.recursive && (!dir.is_symlink() || args.follow_symlinks) {
@@ -82,24 +85,30 @@ async fn handle_connection(
     addr: SocketAddr,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     info!(addr=?addr, "Established Connection");
-    let mut outbound = VecDeque::new();
-    stream.split();
+    let mut outbound = VecDeque::<Message>::new();
     loop {
         let ready = stream
             .ready(Interest::READABLE | Interest::WRITABLE)
             .await?;
 
+        info!("A");
+
         if ready.is_readable() {
-            let mut message = String::new();
-            let _ = stream.read_to_string(&mut message);
-            let message: Message = serde_json::from_str(&message)
-                .with_context(|| "Failed to parse message over socket")?;
-            let (otx, mut orx) = oneshot::channel();
-            tx.send((message, otx)).await?;
-            outbound.push_front(orx.try_recv().with_context(|| "Failed to read callback")?)
+            info!("Reading");
+            let mut message = Vec::new();
+            if let Ok(n) = stream.try_read_buf(&mut message) {}
+            if let Ok(message) = bincode::deserialize(&message)
+                .with_context(|| "Failed to parse message over socket")
+            {
+                let (otx, mut orx) = oneshot::channel();
+                info!(message=?message, "Recieved message");
+                tx.send((message, otx)).await?;
+                outbound.push_front(orx.try_recv().with_context(|| "Failed to read callback")?);
+            }
         }
 
         if ready.is_writable() && !outbound.is_empty() {
+            info!("Writing");
             let message = serde_json::to_string(&outbound.pop_back())
                 .with_context(|| "Failed to serialize message")?;
             stream
@@ -163,17 +172,22 @@ async fn maintainer(
 
     info!("Starting maintainer");
     while let Some((message, response)) = rx.recv().await {
+        info!(message=?message, "Received message");
         match message {
             Message::Search(path) => todo!(),
             Message::Get(n) => todo!(),
             Message::Track(path, args) => {
                 let args = args.clone();
+                info!("a");
                 let config = config.clone();
+                info!("b");
                 let encoder_tx = encoder_tx.clone();
+                info!("c");
                 let paths =
                     tokio_rayon::spawn(move || crawl_directory(path, args, encoder_tx, track))
                         .await
                         .unwrap_or_default();
+                info!("d");
 
                 // Track all paths
                 config.write().await.tracked.extend(paths);
@@ -231,7 +245,6 @@ async fn encoder(mut encoder_rx: mpsc::Receiver<PathBuf>, model: TextEmbedding) 
             })
             .collect();
         let embeddings = model.embed(buffer, Some(amount));
-        println!("{:?}", embeddings);
     }
 }
 

@@ -21,3 +21,4 @@ fastembed.workspace = true
 inotify.workspace = true
 anyhow.workspace = true
 tokio-rayon.workspace = true
+bincode.workspace = true

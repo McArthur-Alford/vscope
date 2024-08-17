@@ -1,7 +1,11 @@
 use anyhow::{Context, Error};
 use serde::{Deserialize, Serialize};
 use std::{path::PathBuf, str::FromStr};
-use tokio::{net::UnixStream, stream};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::UnixStream,
+    stream,
+};
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub enum Message {
@@ -28,9 +32,33 @@ impl Default for TrackArgs {
     }
 }
 
-pub async fn connect_to_daemon() -> anyhow::Result<UnixStream> {
+pub struct Connection {
+    stream: UnixStream,
+}
+
+impl Connection {
+    pub async fn send_message(&mut self, message: Message) -> anyhow::Result<()> {
+        let message = bincode::serialize(&message)?;
+        self.stream.write_all(&message).await?;
+        self.stream.flush().await?;
+        Ok(())
+    }
+    pub async fn recieve_message(&mut self) -> anyhow::Result<Message> {
+        let mut buf = Vec::new();
+        while let Ok(_) = self.stream.read_buf(&mut buf).await {}
+        bincode::deserialize::<Message>(&buf).context("Failed to deserialize")
+    }
+
+    pub async fn communicate(&mut self, message: Message) -> anyhow::Result<Message> {
+        self.send_message(message).await?;
+        self.recieve_message().await
+    }
+}
+
+pub async fn connect_to_daemon() -> anyhow::Result<Connection> {
     let bind_path = PathBuf::from_str("/tmp/vs.sock")?;
-    UnixStream::connect(bind_path)
+    let stream = UnixStream::connect(bind_path)
         .await
-        .context("Failed to connect to daemon")
+        .context("Failed to connect to daemon")?;
+    Ok(Connection { stream })
 }
