@@ -5970,3 +5970,8 @@ dependencies = [
  "cc",
  "pkg-config",
 ]
+
+[[patch.unused]]
+name = "zstd"
+version = "0.13.1"
+source = "git+https://github.com/harana-oss/zstd-rs.git#6b53c9a64eb0a5fb118dcf6f1c1e6896b8731f8f"
