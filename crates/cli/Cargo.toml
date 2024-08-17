@@ -5,3 +5,5 @@ edition = "2021"
 
 [dependencies]
 ratatui.workspace = true
+vs-core.workspace = true
+clap.workspace = true

@@ -1,163 +1,70 @@
+use clap::{Parser};
+use ratatui::{style::Stylize, widgets::Widget, Terminal};
 use std::io;
+use std::io::stdout;
+use std::path::PathBuf;
+use ratatui::backend::CrosstermBackend;
+use vs_core::Message;
+use crate::app_cli::AppCLI;
+use crate::app_interactive::AppInteractive;
 
-use ratatui::{
-    buffer::Buffer,
-    crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind},
-    layout::{Alignment, Rect},
-    style::Stylize,
-    symbols::border,
-    text::{Line, Text},
-    widgets::{
-        block::{Position, Title},
-        Block, Paragraph, Widget,
-    },
-    Frame,
-};
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct Args {
+    search: PathBuf,
+    
+    /// Recurse into directories and symlinks.
+    #[arg(short, long)]
+    recurse: bool,
+
+    /// Recurse into symlinks.
+    #[arg(short, long)]
+    symlinks: bool,
+
+    /// Show directories in output.
+    #[arg(short, long)]
+    directories: bool,
+
+    /// Filter names using regex.
+    #[arg(short, long, default_value = "*")]
+    filter: String,
+
+    /// Show search output inline.
+    #[arg(short, long)]
+    inline: bool,
+    
+    /// Output results in a tabular format.
+    #[arg(short, long)]
+    list: bool,
+}
 
 mod tui;
+mod app_cli;
+mod app_interactive;
 
 fn main() -> io::Result<()> {
-    let mut terminal = tui::init()?;
-    let app_result = App::default().run(&mut terminal);
-    tui::restore()?;
-    app_result
-}
-
-#[derive(Debug, Default)]
-pub struct App {
-    counter: u8,
-    exit: bool,
-}
-
-impl App {
-    /// runs the application's main loop until the user quits
-    pub fn run(&mut self, terminal: &mut tui::Tui) -> io::Result<()> {
-        while !self.exit {
-            terminal.draw(|frame| self.render_frame(frame))?;
-            self.handle_events()?;
-        }
-        Ok(())
-    }
-
-    fn render_frame(&self, frame: &mut Frame) {
-        frame.render_widget(self, frame.area());
-    }
-
-    fn handle_events(&mut self) -> io::Result<()> {
-        match event::read()? {
-            // it's important to check that the event is a key press event as
-            // crossterm also emits key release and repeat events on Windows.
-            Event::Key(key_event) if key_event.kind == KeyEventKind::Press => {
-                self.handle_key_event(key_event)
-            }
-            _ => {}
-        };
-        Ok(())
+    let buffs = ["/mnt/d/", "/mnt/d/vs-scope"]
+        .iter().map(|path| PathBuf::from(path)).collect();
+    
+    let message = Message::Paths(buffs);
+    
+    let args = Args::parse();
+    
+    println!("{:?}", args);
+    
+    if !args.search.exists() {
+        panic!("Provided search directory does not exist")
     }
     
-    fn handle_key_event(&mut self, key_event: KeyEvent) {
-        match key_event.code {
-            KeyCode::Char('q') => self.exit(),
-            KeyCode::Left => self.decrement_counter(),
-            KeyCode::Right => self.increment_counter(),
-            _ => {}
-        }
-    }
-
-    fn exit(&mut self) {
-        self.exit = true;
-    }
-
-    fn increment_counter(&mut self) {
-        self.counter += 1;
-    }
-
-    fn decrement_counter(&mut self) {
-        if self.counter == 0 {
-            return;
-        }
+    if args.inline {      
+        if args.list { AppCLI::render_list(&message) } else { AppCLI::render(&message) }
+    } else {
+        let mut terminal = tui::init()?;
+        let app_result = AppInteractive::default().run(&mut terminal);
+        tui::restore()?;
         
-        self.counter -= 1;
-    }
-}
-
-impl Widget for &App {
-    fn render(self, area: Rect, buf: &mut Buffer) {
-        let app_title = Title::from(" Counter App Tutorial ".bold());
-        let instructions = Title::from(Line::from(vec![
-            " Decrement ".into(),
-            "<Left>".blue().bold(),
-            " Increment ".into(),
-            "<Right>".blue().bold(),
-            " Quit ".into(),
-            "<Q> ".blue().bold(),
-        ]));
-        let block = Block::bordered()
-            .title(app_title.alignment(Alignment::Center))
-            .title(
-                instructions
-                    .alignment(Alignment::Center)
-                    .position(Position::Bottom),
-            )
-            .border_set(border::THICK);
-
-        let counter_text = Text::from(vec![Line::from(vec![
-            "Value: ".into(),
-            self.counter.to_string().yellow(),
-        ])]);
-
-        Paragraph::new(counter_text)
-            .centered()
-            .block(block)
-            .render(area, buf);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use ratatui::style::Style;
-
-    #[test]
-    fn render() {
-        let app = App::default();
-        let mut buf = Buffer::empty(Rect::new(0, 0, 50, 4));
-
-        app.render(buf.area, &mut buf);
-
-        let mut expected = Buffer::with_lines(vec![
-            "┏━━━━━━━━━━━━━ Counter App Tutorial ━━━━━━━━━━━━━┓",
-            "┃                    Value: 0                    ┃",
-            "┃                                                ┃",
-            "┗━ Decrement <Left> Increment <Right> Quit <Q> ━━┛",
-        ]);
-        let title_style = Style::new().bold();
-        let counter_style = Style::new().yellow();
-        let key_style = Style::new().blue().bold();
-        expected.set_style(Rect::new(14, 0, 22, 1), title_style);
-        expected.set_style(Rect::new(28, 1, 1, 1), counter_style);
-        expected.set_style(Rect::new(13, 3, 6, 1), key_style);
-        expected.set_style(Rect::new(30, 3, 7, 1), key_style);
-        expected.set_style(Rect::new(43, 3, 4, 1), key_style);
-
-        // note ratatui also has an assert_buffer_eq! macro that can be used to
-        // compare buffers and display the differences in a more readable way
-        assert_eq!(buf, expected);
-    }
-
-    #[test]
-    fn handle_key_event() -> io::Result<()> {
-        let mut app = App::default();
-        app.handle_key_event(KeyCode::Right.into());
-        assert_eq!(app.counter, 1);
-
-        app.handle_key_event(KeyCode::Left.into());
-        assert_eq!(app.counter, 0);
-
-        let mut app = App::default();
-        app.handle_key_event(KeyCode::Char('q').into());
-        assert!(app.exit);
-
+        app_result.map(|path| print!("{}", path))?;
+        
         Ok(())
     }
 }
