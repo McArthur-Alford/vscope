@@ -10,3 +10,18 @@ pub enum Message {
     Paths(Vec<PathBuf>), // A response with some paths
     Confirmation,        // Confirmation with no data
 }
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct TrackArgs {
+    recursive: bool,
+    follow_symlinks: bool,
+}
+
+impl Default for TrackArgs {
+    fn default() -> Self {
+        TrackArgs {
+            recursive: true,
+            follow_symlinks: false,
+        }
+    }
+}

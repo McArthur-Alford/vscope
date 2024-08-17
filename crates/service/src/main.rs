@@ -2,26 +2,54 @@ use anyhow::{Context, Result};
 use arrow::datatypes::{DataType, Field, Schema, ToByteSlice};
 use fastembed::TextEmbedding;
 use lancedb::Connection;
-use rayon::iter::{ParallelBridge, ParallelIterator};
+use rayon::iter::{ParallelBridge, ParallelExtend, ParallelIterator};
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::env::args;
 use std::error::Error;
-use std::fs::File;
-use std::io::Read;
+use std::fs::{File, OpenOptions};
+use std::io::{Read, Write};
 use std::path::Path;
+use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 use std::{fs::read_dir, io, path::PathBuf, str::FromStr};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader, Interest};
+use tokio::net::unix::SocketAddr;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::select;
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot, Mutex, RwLock};
 use tracing::{error, info, warn};
 use vs_core::Message;
 
 #[derive(Serialize, Deserialize, Default)]
 struct Config {
-    tracked: Vec<PathBuf>,
+    tracked: HashSet<PathBuf>,
+}
+
+impl Config {
+    fn save(&self) {
+        let message = match serde_json::to_string(self) {
+            Ok(message) => message,
+            Err(e) => {
+                error!(error=?e, "Unable to serialize config");
+                return;
+            }
+        };
+
+        let path = Path::new("/tmp/vs.config");
+        let mut opts = OpenOptions::new();
+        opts.write(true).truncate(true);
+        match opts.open(path) {
+            Ok(mut file) => {
+                if let Err(e) = file.write(message.into_bytes().to_byte_slice()) {
+                    error!(error=?e, "Unable to write config to vs.config");
+                }
+            }
+            Err(e) => {
+                error!(error=?e, "Unable to open vs.config for saving");
+            }
+        }
+    }
 }
 
 fn crawl_directory<T: Send + Sync>(dir: PathBuf, f: fn(PathBuf) -> T) -> io::Result<Vec<T>> {
@@ -42,8 +70,11 @@ fn crawl_directory<T: Send + Sync>(dir: PathBuf, f: fn(PathBuf) -> T) -> io::Res
 async fn handle_connection(
     mut stream: UnixStream,
     tx: mpsc::Sender<(Message, oneshot::Sender<Message>)>, // Send messages to daemon
+    addr: SocketAddr,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
+    info!(addr=?addr, "Established Connection");
     let mut outbound = VecDeque::new();
+    stream.split();
     loop {
         let ready = stream
             .ready(Interest::READABLE | Interest::WRITABLE)
@@ -94,16 +125,49 @@ async fn get_config() -> Result<Config, Box<dyn Error + Send + Sync>> {
     })
 }
 
+fn track(path: PathBuf, args: TrackArgs) -> PathBuf {
+    // Embed the path and save it to the database
+    if !path.exists() {
+        return path;
+    }
+
+    if path.is_symlink() {}
+    if path.is_dir() {}
+    if path.is_file() {}
+
+    // Return the path for tracking
+    path
+}
+
 async fn maintainer(
-    rx: mpsc::Receiver<(Message, oneshot::Sender<Message>)>,
+    mut rx: mpsc::Receiver<(Message, oneshot::Sender<Message>)>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     let model = TextEmbedding::try_new(Default::default())?;
     info!("Loaded model");
 
-    let config = get_config().await?;
+    let mut config = Arc::new(RwLock::new(get_config().await?));
     info!("Loaded Config");
 
-    loop {}
+    info!("Starting maintainer");
+    while let Some((message, response)) = rx.recv().await {
+        match message {
+            Message::Search(_) => todo!(),
+            Message::Get(_) => todo!(),
+            Message::Track(path) => {
+                let config = config.clone();
+                let paths = tokio_rayon::spawn(|| crawl_directory(path, track))
+                    .await
+                    .unwrap_or_default();
+
+                // Track all paths
+                config.write().await.tracked.extend(paths);
+            }
+            Message::Untrack(_) => todo!(),
+            Message::Paths(_) => todo!(),
+            Message::Confirmation => todo!(),
+        };
+    }
+    Ok(())
 }
 
 async fn socket_listener(
@@ -116,11 +180,12 @@ async fn socket_listener(
     let listener =
         UnixListener::bind("/tmp/vs.sock").with_context(|| "Unable to bind unix socket")?;
 
+    info!("Starting socket listener");
     loop {
         match listener.accept().await {
-            Ok((stream, _addr)) => {
+            Ok((stream, addr)) => {
                 let tx = tx.clone();
-                tokio::task::spawn(async move { handle_connection(stream, tx).await });
+                tokio::task::spawn(async move { handle_connection(stream, tx, addr).await });
             }
             Err(e) => {
                 error!(error = %e, "error accepting socket");
@@ -135,8 +200,8 @@ async fn main() {
     tracing_subscriber::fmt::init();
     let (tx, rx) = mpsc::channel::<(Message, oneshot::Sender<Message>)>(1);
 
-    let mut t1 = tokio::task::spawn(async move { socket_listener(tx) });
-    let mut t2 = tokio::task::spawn(async move { maintainer(rx) });
+    let mut t1 = tokio::task::spawn(socket_listener(tx));
+    let mut t2 = tokio::task::spawn(maintainer(rx));
 
     let e = select!(
         r = &mut t1 => {t2.abort(); r.err()},

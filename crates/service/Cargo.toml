@@ -20,3 +20,4 @@ futures-util.workspace = true
 fastembed.workspace = true
 inotify.workspace = true
 anyhow.workspace = true
+tokio-rayon.workspace = true
