@@ -32,7 +32,7 @@ enum Commands {
         /// Recurse into directories.
         #[arg(short, long)]
         recurse: bool,
-        
+
         #[clap(flatten)]
         args: SharedArgs,
     },
@@ -69,11 +69,11 @@ struct SearchArgs {
     directories: bool,
 
     /// Show <value> search results inline.
-    #[arg(short, long, group="inline_grp")]
+    #[arg(short, long, group = "inline_grp")]
     inline: Option<usize>,
 
     /// Output results in a tabular format.
-    #[arg(short, long, requires="inline_grp")]
+    #[arg(short, long, requires = "inline_grp")]
     list: bool,
 }
 
@@ -88,7 +88,11 @@ async fn main() -> Result<()> {
     let mut connection = connect_to_daemon().await?;
 
     match &args.command {
-        Some(Commands::Track { path, args, recurse }) => {
+        Some(Commands::Track {
+            path,
+            args,
+            recurse,
+        }) => {
             if !path.exists() {
                 return anyhow::bail!("Path does not exist");
             }
@@ -109,7 +113,11 @@ async fn main() -> Result<()> {
                 }
             }
         }
-        Some(Commands::Untrack { path, args, recurse }) => {
+        Some(Commands::Untrack {
+            path,
+            args,
+            recurse,
+        }) => {
             if !path.exists() {
                 return anyhow::bail!("Path does not exist");
             }
@@ -168,8 +176,11 @@ async fn main_command(args: &SearchArgs, mut connection: Connection) -> Result<(
                         p2.push(p);
                         p2
                     })
-                    .filter(|p| p.is_file() || args.directories && p.is_dir() 
-                        || args.args.symlinks && p.is_symlink())
+                    .filter(|p| {
+                        p.is_file()
+                            || args.directories && p.is_dir()
+                            || args.args.symlinks && p.is_symlink()
+                    })
                     .collect::<Vec<PathBuf>>();
 
                 if args.list {
@@ -180,7 +191,8 @@ async fn main_command(args: &SearchArgs, mut connection: Connection) -> Result<(
             } else {
                 let mut terminal = tui_helper::init().context("Failed to init terminal")?;
                 let app_result = AppInteractive::default()
-                    .run(&mut terminal, &mut connection, args).await;
+                    .run(&mut terminal, &mut connection, args)
+                    .await;
                 tui_helper::restore()?;
 
                 app_result

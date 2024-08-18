@@ -1,12 +1,11 @@
 use crate::{tui_helper, Args};
+use clap::builder::Str;
 use std::io;
 use std::path::PathBuf;
-use clap::builder::Str;
 use vs_core::Message;
 
 #[derive(Debug, Default)]
-pub struct AppCLI {
-}
+pub struct AppCLI {}
 
 impl AppCLI {
     pub fn render(paths: &Vec<PathBuf>) -> io::Result<()> {
@@ -17,22 +16,36 @@ impl AppCLI {
 
         Ok(())
     }
-    
+
     pub fn render_list(paths: &Vec<PathBuf>) -> io::Result<()> {
-        const PATH_HEADER:&str = "PATH";
-        const TYPE_HEADER:&str = "TYPE";
-        
-        let mut maxPathLength = paths.iter()
+        const PATH_HEADER: &str = "PATH";
+        const TYPE_HEADER: &str = "TYPE";
+
+        let mut maxPathLength = paths
+            .iter()
             .map(|path| path.display().to_string().len())
             .max()
-            .unwrap();
-        
-        maxPathLength = 
-            if maxPathLength >= PATH_HEADER.len() {maxPathLength} else { PATH_HEADER.len() };
-        
-        println!("{:<width$} {}", PATH_HEADER, TYPE_HEADER, width=maxPathLength);
+            .unwrap_or_default();
+
+        maxPathLength = if maxPathLength >= PATH_HEADER.len() {
+            maxPathLength
+        } else {
+            PATH_HEADER.len()
+        };
+
+        println!(
+            "{:<width$} {}",
+            PATH_HEADER,
+            TYPE_HEADER,
+            width = maxPathLength
+        );
         for path in paths {
-            println!("{:<width$} {}", path.display(), get_path_type_char(path), width = maxPathLength);
+            println!(
+                "{:<width$} {}",
+                path.display(),
+                get_path_type_char(path),
+                width = maxPathLength
+            );
         }
 
         Ok(())
