@@ -77,7 +77,7 @@ struct SearchArgs {
 
 mod app_cli;
 mod app_interactive;
-mod tui;
+mod tui_helper;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -129,8 +129,9 @@ async fn main() -> Result<()> {
 }
 
 async fn main_command(args: &SearchArgs, mut connection: Connection) -> Result<()> {
-    let search_message = Message::Search(args.query.clone());
-    let response = connection.communicate(search_message).await?;
+    // let search_message = Message::Search(args.query.clone());
+    // let response = connection.communicate(search_message).await?;
+    let response = Confirmation;
     
     match response {
         Confirmation => {
@@ -149,9 +150,9 @@ async fn main_command(args: &SearchArgs, mut connection: Connection) -> Result<(
                     AppCLI::render(&paths).context("Failed to render")
                 }
             } else {
-                let mut terminal = tui::init().context("Failed to init terminal")?;
+                let mut terminal = tui_helper::init().context("Failed to init terminal")?;
                 let app_result = AppInteractive::default().run(&mut terminal).await;
-                tui::restore()?;
+                tui_helper::restore()?;
 
                 app_result
                     .map(|opt| opt.map(|path| print!("{}", path)))
