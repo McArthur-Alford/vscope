@@ -3,9 +3,9 @@ use crate::app_interactive::AppInteractive;
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand, ValueHint};
 use ratatui::{style::Stylize, widgets::Widget};
-use std::fs;
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::{env, fs};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use vs_core::{connect_to_daemon, Connection, Message, TrackArgs};
 use Message::Confirmation;
@@ -154,6 +154,22 @@ async fn main_command(args: &SearchArgs, mut connection: Connection) -> Result<(
                         anyhow::bail!("Unexpected response");
                     }
                 };
+
+                let pwd = env::current_dir()?;
+                let paths = paths
+                    .into_iter()
+                    .filter(|p| p.starts_with(pwd.clone()))
+                    .filter_map(|p| {
+                        let stripped = p.strip_prefix(pwd.clone()).map(|p| p.to_path_buf());
+                        stripped.ok()
+                    })
+                    .map(|p| {
+                        let mut p2 = PathBuf::new();
+                        p2.push(".");
+                        p2.push(p);
+                        p2
+                    })
+                    .collect::<Vec<PathBuf>>();
 
                 if args.list {
                     AppCLI::render_list(&paths).context("Failed to render list")

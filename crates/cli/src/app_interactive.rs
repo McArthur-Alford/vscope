@@ -19,8 +19,9 @@ use ratatui::{
     },
     Frame,
 };
-use std::path::PathBuf;
-use std::{fs, io};
+use std::path::{Path, PathBuf};
+use std::str::FromStr;
+use std::{env, fs, io};
 use syntect::easy::HighlightLines;
 use syntect::highlighting::{Style, ThemeSet};
 use syntect::parsing::syntax_definition::ContextReference::File;
@@ -59,6 +60,22 @@ impl AppInteractive {
                 panic!("Received incorrect response from daemon: {:?}", invalid)
             }
         };
+
+        let pwd = env::current_dir()?;
+        let paths = paths
+            .into_iter()
+            .filter(|p| p.starts_with(pwd.clone()))
+            .filter_map(|p| {
+                let stripped = p.strip_prefix(pwd.clone()).map(|p| p.to_path_buf());
+                stripped.ok()
+            })
+            .map(|p| {
+                let mut p2 = PathBuf::new();
+                p2.push(".");
+                p2.push(p);
+                p2
+            })
+            .collect::<Vec<PathBuf>>();
 
         self.items = StatefulList::with_items(paths);
 
