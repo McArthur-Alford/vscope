@@ -1,5 +1,5 @@
 use crate::app_interactive::AppEvent::Run;
-use crate::tui_helper;
+use crate::{tui_helper, SearchArgs};
 use anyhow::anyhow;
 use ratatui::layout::{Direction, Layout};
 use ratatui::prelude::{Constraint, Modifier, Span, StatefulWidget};
@@ -44,7 +44,8 @@ enum AppEvent {
 
 impl AppInteractive {
     /// runs the application's main loop until the user quits
-    pub async fn run(&mut self, terminal: &mut tui_helper::Tui, connection: &mut Connection) -> anyhow::Result<Option<String>> {
+    pub async fn run(&mut self, terminal: &mut tui_helper::Tui, 
+                     connection: &mut Connection, args: &SearchArgs) -> anyhow::Result<Option<String>> {
         let message = Message::Get(200);
         let paths = match connection.communicate(message).await? {
             Message::Paths(paths) => paths,
@@ -67,6 +68,8 @@ impl AppInteractive {
                 p2.push(p);
                 p2
             })
+            .filter(|p| p.is_file() || args.directories && p.is_dir()
+                || args.args.symlinks && p.is_symlink())
             .collect::<Vec<PathBuf>>();
 
         self.items = StatefulList::with_items(paths);
@@ -188,7 +191,7 @@ impl AppInteractive {
 
 impl Widget for &mut AppInteractive {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let app_title = Title::from(" Counter App Tutorial ".bold());
+        let app_title = Title::from(" Vibe Search ".bold());
         let instructions = Title::from(Line::from(vec![
             " Accept ".into(),
             "<Enter>".blue().bold(),
@@ -202,7 +205,7 @@ impl Widget for &mut AppInteractive {
 
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(33), Constraint::Percentage(67)].as_ref())
+            .constraints([Constraint::Percentage(33), Constraint::Length(1), Constraint::Percentage(67)].as_ref())
             .split(area);
 
         let block = Block::bordered()
@@ -219,6 +222,17 @@ impl Widget for &mut AppInteractive {
             .vertical_margin(1)
             .constraints([Constraint::Percentage(100)].as_ref())
             .split(chunks[0]);
+        
+        let border_area = Layout::default()
+            .vertical_margin(1)
+            .constraints([Constraint::Percentage(100)].as_ref())
+            .split(chunks[1]);
+
+        let preview_area = Layout::default()
+            .horizontal_margin(2)
+            .vertical_margin(1)
+            .constraints([Constraint::Percentage(100)].as_ref())
+            .split(chunks[2]);
 
         // Iterate through all elements in the `items` and stylize them.
         let items: Vec<ListItem> = self
@@ -241,13 +255,14 @@ impl Widget for &mut AppInteractive {
             .repeat_highlight_symbol(true)
             .highlight_spacing(HighlightSpacing::Always);
 
-        let block2 = Block::bordered().borders(Borders::RIGHT);
+        let border = Block::bordered().borders(Borders::RIGHT);
 
-        Paragraph::new(Text::from(self.get_preview(chunks[1].height as usize)))
-            .block(block)
-            .render(chunks[1], buf);
+        block.render(area, buf);
+        
+        Paragraph::new(Text::from(self.get_preview(preview_area[0].height as usize)))
+            .render(preview_area[0], buf);
 
-        block2.render(chunks[0], buf);
+        border.render(border_area[0], buf);
 
         StatefulWidget::render(list, list_area[0], buf, &mut self.items.state);
     }
