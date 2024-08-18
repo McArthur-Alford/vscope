@@ -499,8 +499,7 @@ async fn db_get(db: &mut Connection, query: Vec<f32>) -> anyhow::Result<Vec<Path
     options.max_batch_length = 1;
     let results = tbl
         .query()
-        .nearest_to(query.as_slice())
-        .unwrap()
+        .nearest_to(query.as_slice())?
         // .limit(amount)
         .execute()
         .await

@@ -178,7 +178,8 @@ async fn main_command(args: &SearchArgs, mut connection: Connection) -> Result<(
                 }
             } else {
                 let mut terminal = tui_helper::init().context("Failed to init terminal")?;
-                let app_result = AppInteractive::default().run(&mut terminal).await;
+                let app_result = AppInteractive::default()
+                    .run(&mut terminal, &mut connection).await;
                 tui_helper::restore()?;
 
                 app_result
