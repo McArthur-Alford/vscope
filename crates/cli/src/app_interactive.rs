@@ -1,32 +1,42 @@
 use crate::app_interactive::AppEvent::Run;
 use crate::tui_helper;
 use anyhow::anyhow;
+use ratatui::crossterm::style::style;
 use ratatui::layout::{Direction, Layout};
 use ratatui::prelude::{Constraint, Modifier, Span, StatefulWidget};
+use ratatui::text::Text;
 use ratatui::widgets::{Borders, HighlightSpacing, List, ListItem, ListState};
-use ratatui::{buffer::Buffer, crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind}, layout::{Alignment, Rect}, style::Stylize, symbols::border, text, text::Line, widgets::{
-    block::{Position, Title},
-    Block, Paragraph, Widget,
-}, Frame};
+use ratatui::{
+    buffer::Buffer,
+    crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind},
+    layout::{Alignment, Rect},
+    style::Stylize,
+    symbols::border,
+    text,
+    text::Line,
+    widgets::{
+        block::{Position, Title},
+        Block, Paragraph, Widget,
+    },
+    Frame,
+};
+use serde_json::ser::CharEscape::CarriageReturn;
+use std::ffi::OsStr;
 use std::path::PathBuf;
 use std::{env, fs, io};
-use std::ffi::OsStr;
-use ratatui::crossterm::style::style;
-use ratatui::text::Text;
-use serde_json::ser::CharEscape::CarriageReturn;
 use syntect::easy::HighlightLines;
 use syntect::highlighting::{Style, ThemeSet};
 use syntect::parsing::syntax_definition::ContextReference::File;
 use syntect::parsing::SyntaxSet;
 use syntect::util::{as_24_bit_terminal_escaped, LinesWithEndings};
-use vs_core::{connect_to_daemon, Connection, Message};
 use tui::style::Color;
+use vs_core::{connect_to_daemon, Connection, Message};
 
 #[derive(Debug, Default)]
 struct StatefulList {
     state: ListState,
     items: Vec<PathBuf>,
-    preview: Option<String>
+    preview: Option<String>,
 }
 #[derive(Debug, Default)]
 pub struct AppInteractive {
@@ -44,8 +54,12 @@ enum AppEvent {
 
 impl AppInteractive {
     /// runs the application's main loop until the user quits
-    pub async fn run(&mut self, terminal: &mut tui_helper::Tui, connection: &mut Connection) -> anyhow::Result<Option<String>> {
-        let message = Message::Get(200);
+    pub async fn run(
+        &mut self,
+        terminal: &mut tui_helper::Tui,
+        connection: &mut Connection,
+    ) -> anyhow::Result<Option<String>> {
+        let message = Message::Get(500);
         let paths = match connection.communicate(message).await? {
             Message::Paths(paths) => paths,
             invalid => {
@@ -126,37 +140,32 @@ impl AppInteractive {
     fn exit(&mut self) {
         self.status = AppEvent::Quit;
     }
-    
+
     fn get_preview(&self, numLines: usize) -> Vec<Line> {
-        let unavailable =
-            vec!(Line::from("Preview unavailable"));
-        
+        let unavailable = vec![Line::from("Preview unavailable")];
+
         match &self.items.preview {
-            None => {
-                unavailable
-            }
+            None => unavailable,
             Some(content) => {
                 let extension = match self.items.items.get(self.items.state.selected().unwrap()) {
                     Some(path) => {
                         let ext = match path.extension() {
                             Some(ext) => ext.to_str(),
-                            _ => { None }
+                            _ => None,
                         };
-                        
+
                         match ext {
-                            Some(e) => {
-                                e
-                            },
+                            Some(e) => e,
                             None => {
                                 return unavailable;
                             }
                         }
-                    },
+                    }
                     None => {
                         return unavailable;
                     }
                 };
-                
+
                 let ps = SyntaxSet::load_defaults_newlines();
                 let ts = ThemeSet::load_defaults();
 
@@ -165,21 +174,32 @@ impl AppInteractive {
                 match syntax {
                     Some(syntax) => {
                         let mut h = HighlightLines::new(syntax, &ts.themes["base16-ocean.dark"]);
-                        LinesWithEndings::from(&content).take(numLines).map(|line| { // LinesWithEndings enables use of newlines mode
-                            let line_spans =
-                                h.highlight_line(line, &ps)
-                                    .unwrap();
-                            Line::from(line_spans.iter().map(|(ref style, text)| {
-                                Span::styled(
-                                    text.to_string(),
-                                    ratatui::prelude::Style::new()
-                                        .fg(ratatui::prelude::Color::Rgb(style.foreground.r, style.foreground.b, style.foreground.b)))
-                            }).collect::<Vec<Span>>())
-                        }).collect()
-                    },
-                    None => {
-                        unavailable
+                        LinesWithEndings::from(&content)
+                            .take(numLines)
+                            .map(|line| {
+                                // LinesWithEndings enables use of newlines mode
+                                let line_spans = h.highlight_line(line, &ps).unwrap();
+                                Line::from(
+                                    line_spans
+                                        .iter()
+                                        .map(|(ref style, text)| {
+                                            Span::styled(
+                                                text.to_string(),
+                                                ratatui::prelude::Style::new().fg(
+                                                    ratatui::prelude::Color::Rgb(
+                                                        style.foreground.r,
+                                                        style.foreground.b,
+                                                        style.foreground.b,
+                                                    ),
+                                                ),
+                                            )
+                                        })
+                                        .collect::<Vec<Span>>(),
+                                )
+                            })
+                            .collect()
                     }
+                    None => unavailable,
                 }
             }
         }
@@ -253,7 +273,7 @@ impl Widget for &mut AppInteractive {
     }
 }
 
-impl StatefulList {    
+impl StatefulList {
     fn with_items(items: Vec<PathBuf>) -> StatefulList {
         StatefulList {
             state: ListState::default(),
@@ -302,12 +322,10 @@ impl StatefulList {
         }
 
         let selected = self.items.get(i.unwrap());
-        
+
         self.preview = match selected {
-            Some(path) if path.is_file() => {
-                fs::read_to_string(path).ok()
-            },
-            _ => None
+            Some(path) if path.is_file() => fs::read_to_string(path).ok(),
+            _ => None,
         }
     }
 

@@ -236,20 +236,25 @@ async fn maintainer(
                 let config = config.clone();
                 let encoder_tx = encoder_tx.clone();
                 let path2 = path.clone();
-                let paths =
-                    tokio_rayon::spawn(move || crawl_directory(path, args, encoder_tx, track))
-                        .await
-                        .unwrap_or_default();
+                tokio::task::spawn(async move {
+                    let Ok(mut db) = initialize_db().await.map_err(|e| anyhow!("Failed")) else {
+                        return;
+                    };
+                    let paths =
+                        tokio_rayon::spawn(move || crawl_directory(path, args, encoder_tx, track))
+                            .await
+                            .unwrap_or_default();
 
-                info!(path=?path2, "Finished crawling for track");
+                    info!(path=?path2, "Finished crawling for track");
 
-                // Track all paths
-                {
-                    config.write().await.tracked.extend(paths);
-                }
-                config.read().await.save();
+                    // Track all paths
+                    {
+                        config.write().await.tracked.extend(paths);
+                    }
+                    config.read().await.save();
 
-                db_index(&mut db).await;
+                    db_index(&mut db).await;
+                });
             }
             Message::Untrack(path, args) => {
                 info!("Handling untrack");
@@ -287,11 +292,12 @@ async fn maintainer(
 
 #[instrument(skip_all)]
 async fn encoder(mut encoder_rx: mpsc::Receiver<PathBuf>, model: TextEmbedding) {
-    let mut db = initialize_db().await.expect("Expected DB");
+    let model = Arc::new(Mutex::new(model));
+    let mut db = Arc::new(Mutex::new(initialize_db().await.expect("Expected DB")));
     let mut zc = 0;
     loop {
         let mut buffer = Vec::<PathBuf>::new();
-        let amount = encoder_rx.recv_many(&mut buffer, 10).await;
+        let amount = encoder_rx.recv_many(&mut buffer, 100).await;
         if amount == 0 {
             zc += 1;
             if zc % 100 == 0 {
@@ -315,7 +321,7 @@ async fn encoder(mut encoder_rx: mpsc::Receiver<PathBuf>, model: TextEmbedding) 
                     if let Ok(file) = File::open(path) {
                         let mut reader = BufReader::new(file);
                         let mut buf = Vec::new();
-                        if let Err(e) = reader.take(10_000_000).read_to_end(&mut buf) {
+                        if let Err(e) = reader.take(100000).read_to_end(&mut buf) {
                             error!("{:?}", e);
                             return name;
                         }
@@ -336,13 +342,20 @@ async fn encoder(mut encoder_rx: mpsc::Receiver<PathBuf>, model: TextEmbedding) 
             .collect();
         info!("Starting encode");
         info!(?names);
-        let Ok(embeddings) = model.embed(names, Some(amount)) else {
-            warn!("Encoding failed");
-            continue;
-        };
-        info!("Finished Encoding");
 
-        insert_db(&mut db, embeddings, buffer).await;
+        let model = model.clone();
+        let db = db.clone();
+        let t = tokio::task::spawn(async move {
+            let Ok(embeddings) = model.lock().await.embed(names, Some(amount)) else {
+                warn!("Encoding failed");
+                return;
+            };
+            info!("Finished Encoding");
+
+            insert_db(db, embeddings, buffer).await;
+        });
+
+        let timer = tokio::time::timeout(tokio::time::Duration::from_secs(5), t).await;
     }
 }
 
@@ -389,7 +402,8 @@ async fn main() {
 }
 
 #[instrument(skip_all)]
-async fn insert_db(db: &mut Connection, encodings: Vec<Vec<f32>>, paths: Vec<PathBuf>) {
+async fn insert_db(db: Arc<Mutex<Connection>>, encodings: Vec<Vec<f32>>, paths: Vec<PathBuf>) {
+    let db = db.lock().await;
     info!("Inserting into DB");
     if encodings.len() == 0 {
         info!("Zero encodings, nothing to insert");
@@ -499,7 +513,8 @@ async fn db_get(db: &mut Connection, query: Vec<f32>) -> anyhow::Result<Vec<Path
     options.max_batch_length = 1;
     let results = tbl
         .query()
-        .nearest_to(query.as_slice())?
+        .nearest_to(query.as_slice())
+        .unwrap()
         // .limit(amount)
         .execute()
         .await
