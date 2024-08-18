@@ -17,7 +17,7 @@ struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
     #[clap(flatten)]
-    search: SearchArgs,
+    search: Option<SearchArgs>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -132,7 +132,7 @@ async fn main() -> Result<()> {
             }
         }
         Some(Commands::Search(args)) => main_command(args, connection).await,
-        _ => main_command(&args.search, connection).await,
+        _ => main_command(&args.search.unwrap(), connection).await,
     }
 }
 
