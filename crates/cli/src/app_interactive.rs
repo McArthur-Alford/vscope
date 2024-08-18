@@ -183,7 +183,9 @@ impl AppInteractive {
                         }
                     },
                     _ => {
-                        vec!(Line::from(content.clone()).into())
+                        content.split('\n').map(|line| {
+                            Line::from(line)
+                        }).collect()
                     },
                 }
             }
@@ -324,27 +326,31 @@ impl StatefulList {
             Some(path) if path.is_file() => {
                 fs::read_to_string(path).ok()
             },
-            Some(path) if path.is_dir() => {
-                match fs::read_dir(path) {
+            Some(path) if path.is_dir() => {                
+                let entries = fs::read_dir(path);
+                
+                match entries {
                     Ok(entries) => {
-                        entries.filter_map(|entry| {
+                        let mut paths = Vec::new();
+                        for entry in entries {
                             match entry {
                                 Ok(entry) => {
                                     let path = entry.path();
                                     if let Some(path_str) = path.to_str() {
-                                        Some(path_str.to_string())
-                                    } else {
-                                        None
+                                        paths.push(path_str.to_string());
                                     }
                                 }
-                                Err(_) => {
-                                    None
-                                }
+                                Err(_) => {}
                             }
-                        }).flatten().collect()
-                    },
-                    _ => None
+                        }
+
+                        Some(paths.join("\n"))
+                    }
+                    Err(_) => {
+                        None
+                    }
                 }
+                
             },
             _ => None
         }
