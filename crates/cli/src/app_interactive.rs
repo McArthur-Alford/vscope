@@ -1,10 +1,10 @@
+use crate::app_interactive::AppEvent::Run;
 use crate::tui;
-use std::io;
-use std::io::{Error, ErrorKind};
-use std::path::PathBuf;
-use std::str::FromStr;
-use std::sync::Mutex;
 use anyhow::anyhow;
+use ratatui::layout::{Direction, Layout};
+use ratatui::prelude::{Color, Constraint, Modifier, StatefulWidget, Style};
+use ratatui::symbols::block;
+use ratatui::widgets::{Borders, HighlightSpacing, List, ListDirection, ListItem, ListState};
 use ratatui::{
     buffer::Buffer,
     crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind},
@@ -18,12 +18,12 @@ use ratatui::{
     },
     Frame,
 };
-use ratatui::layout::{Direction, Layout};
-use ratatui::prelude::{Color, Style, Modifier, Constraint, StatefulWidget};
-use ratatui::symbols::block;
-use ratatui::widgets::{Borders, HighlightSpacing, List, ListDirection, ListItem, ListState};
+use std::io;
+use std::io::{Error, ErrorKind};
+use std::path::PathBuf;
+use std::str::FromStr;
+use std::sync::Mutex;
 use vs_core::{connect_to_daemon, Message, TrackArgs};
-use crate::app_interactive::AppEvent::Run;
 
 #[derive(Debug, Default)]
 struct StatefulList {
@@ -50,15 +50,17 @@ impl AppInteractive {
         let mut connection = connect_to_daemon().await?;
         let message = Message::Get(10);
         let paths = match connection.communicate(message).await? {
-            Message::Paths(paths) => { paths },
-            invalid => { panic!("Received incorrect response from daemon: {:?}", invalid) }
+            Message::Paths(paths) => paths,
+            invalid => {
+                panic!("Received incorrect response from daemon: {:?}", invalid)
+            }
         };
-        
-        if paths.len() != 10 {
-            panic!("Received less than 10 paths: ({}) {}", 
-                paths.len(),
-                   paths.iter().map(|path| path.display().to_string()).collect::<Vec<String>>().join(", "));
-        }
+
+        // if paths.len() != 10 {
+        //     panic!("Received less than 10 paths: ({}) {}",
+        //         paths.len(),
+        //            paths.iter().map(|path| path.display().to_string()).collect::<Vec<String>>().join(", "));
+        // }
 
         self.items = StatefulList::with_items(paths);
 
@@ -69,19 +71,18 @@ impl AppInteractive {
 
         match self.status {
             AppEvent::Save => {
-                let test = self.items
-                    .state
-                    .selected()
-                    .map(|selected| self.items.items.get(selected)
-                        .unwrap_or(&PathBuf::from("magic")).display().to_string());
+                let test = self.items.state.selected().map(|selected| {
+                    self.items
+                        .items
+                        .get(selected)
+                        .unwrap_or(&PathBuf::from("magic"))
+                        .display()
+                        .to_string()
+                });
                 Ok(test)
             }
-            AppEvent::Quit => {
-                Ok(Some("Test".to_string()))
-            }
-            _ => {
-                Err(anyhow!("Invalid status"))
-            }
+            AppEvent::Quit => Ok(Some("Test".to_string())),
+            _ => Err(anyhow!("Invalid status")),
         }
     }
 
@@ -136,10 +137,7 @@ impl Widget for &mut AppInteractive {
 
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Percentage(33),
-                Constraint::Percentage(67),
-            ].as_ref())
+            .constraints([Constraint::Percentage(33), Constraint::Percentage(67)].as_ref())
             .split(area);
 
         let block = Block::bordered()
@@ -153,15 +151,18 @@ impl Widget for &mut AppInteractive {
 
         let counter_text = Text::from(vec![Line::from(vec![
             "Value: ".into(),
-            self.items.state.selected().unwrap_or(0).to_string().yellow(),
+            self.items
+                .state
+                .selected()
+                .unwrap_or(0)
+                .to_string()
+                .yellow(),
         ])]);
 
         let list_area = Layout::default()
             .horizontal_margin(2)
             .vertical_margin(1)
-            .constraints([
-                Constraint::Percentage(100),
-            ].as_ref())
+            .constraints([Constraint::Percentage(100)].as_ref())
             .split(chunks[0]);
 
         // Iterate through all elements in the `items` and stylize them.
@@ -179,7 +180,7 @@ impl Widget for &mut AppInteractive {
             .highlight_style(
                 Style::default()
                     .add_modifier(Modifier::BOLD)
-                    .add_modifier(Modifier::REVERSED)
+                    .add_modifier(Modifier::REVERSED),
             )
             .highlight_symbol(">")
             .repeat_highlight_symbol(true)
@@ -197,7 +198,6 @@ impl Widget for &mut AppInteractive {
             .render(area, buf);
     }
 }
-
 
 impl StatefulList {
     fn with_items(items: Vec<PathBuf>) -> StatefulList {
@@ -230,7 +230,7 @@ impl StatefulList {
                     i - 1
                 }
             }
-            None => 0
+            None => 0,
         };
         self.state.select(Some(i));
     }

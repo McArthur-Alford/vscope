@@ -173,13 +173,13 @@ fn track(path: &PathBuf, args: &TrackArgs, tx: &mut mpsc::Sender<PathBuf>) {
         return;
     }
 
-    if path.is_dir() && !args.recursive {
-        tx.blocking_send(path.clone());
-    }
-    if path.is_file() && true {
-        // TODO regex, etc
-        tx.blocking_send(path.clone());
-    }
+    tx.blocking_send(path.clone());
+    // if path.is_dir() && !args.recursive {
+    // }
+    // if path.is_file() && true {
+    //     // TODO regex, etc
+    //     tx.blocking_send(path.clone());
+    // }
 }
 
 #[instrument(skip_all)]
@@ -211,6 +211,7 @@ async fn maintainer(
                 info!("Handling search");
                 let query = model.embed(vec![path], None)?.get(0).unwrap().clone();
                 got = db_get(&mut db, query).await?;
+                info!(?got);
                 response
                     .send(Message::Confirmation)
                     .map_err(|e| anyhow!("Failed to send response"))?;
@@ -296,28 +297,32 @@ async fn encoder(mut encoder_rx: mpsc::Receiver<PathBuf>, model: TextEmbedding) 
         }
         zc = 0;
         info!(num_files=?amount, "Getting contents");
+        info!(buffer=?buffer);
 
         let names = buffer
             .iter()
             .filter_map(|path| {
                 let name = path.file_name().map(|s| s.to_string_lossy().to_string());
+                println!("{:?}", name);
                 if path.is_file() && binaryornot::is_binary(path).unwrap_or(false) {
-                    // warn!(bin=?path, "Skipping binary");
+                    warn!(bin=?path, "Skipping binary");
                     name
                 } else if path.is_file() {
-                    let Ok(mut file) = File::open(path) else {
-                        return None;
-                    };
-                    let mut reader = BufReader::new(file);
-                    let mut buf = vec![0u8; 1_000_000];
-                    reader.read_exact(&mut buf).ok()?;
-                    let buf = buf
-                        .iter()
-                        .filter_map(|c| char::from_u32(*c as u32))
-                        .collect();
-                    // let mut contents = String::new();
-                    // let _ = file.read_to_string(&mut contents);
-                    Some([name.unwrap_or("".to_string()), buf].join(": "))
+                    if let Ok(file) = File::open(path) {
+                        let mut reader = BufReader::new(file);
+                        let mut buf = Vec::new();
+                        if let Err(e) = reader.take(10_000_000).read_to_end(&mut buf) {
+                            error!("{:?}", e);
+                            return name;
+                        }
+                        let buf = buf
+                            .iter()
+                            .filter_map(|c| char::from_u32(*c as u32))
+                            .collect();
+                        Some([name.unwrap_or("".to_string()), buf].join(": "))
+                    } else {
+                        name
+                    }
                 } else if path.is_dir() {
                     name
                 } else {
@@ -326,6 +331,7 @@ async fn encoder(mut encoder_rx: mpsc::Receiver<PathBuf>, model: TextEmbedding) 
             })
             .collect();
         info!("Starting encode");
+        info!(?names);
         let Ok(embeddings) = model.embed(names, Some(amount)) else {
             warn!("Encoding failed");
             continue;
@@ -380,13 +386,16 @@ async fn main() {
 
 #[instrument(skip_all)]
 async fn insert_db(db: &mut Connection, encodings: Vec<Vec<f32>>, paths: Vec<PathBuf>) {
+    info!("Inserting into DB");
     if encodings.len() == 0 {
+        info!("Zero encodings, nothing to insert");
         return;
     }
     let length = encodings[0].len();
     let amount = encodings.len();
     let schema = db_schema().await;
     // Create a RecordBatch stream.
+    info!("A");
     let batches = RecordBatchIterator::new(
         vec![RecordBatch::try_new(
             schema.clone(),
@@ -411,6 +420,7 @@ async fn insert_db(db: &mut Connection, encodings: Vec<Vec<f32>>, paths: Vec<Pat
         schema.clone(),
     );
 
+    info!("B");
     let tbl = match db.open_table("index").execute().await {
         Ok(tbl) => tbl,
         Err(e) => db
@@ -419,20 +429,23 @@ async fn insert_db(db: &mut Connection, encodings: Vec<Vec<f32>>, paths: Vec<Pat
             .await
             .unwrap(),
     };
+    info!("C");
 
     if let Err(e) = tbl.add(batches).execute().await {
         error!(err=?e, "Unable to add batches");
     }
+
+    info!("Done inserting into db");
 }
 
 #[instrument(skip_all)]
 async fn db_indexer() -> anyhow::Result<()> {
     let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(100));
-    let mut db = initialize_db()
-        .await
-        .map_err(|e| anyhow!("Indexer failed to connect to db"))?;
     loop {
         interval.tick().await;
+        let mut db = initialize_db()
+            .await
+            .map_err(|e| anyhow!("Indexer failed to connect to db"))?;
         info!("Beginning automatic index");
         if let Err(e) = db_index(&mut db).await {
             error!(error=?e, "Failed to index db");
@@ -483,7 +496,7 @@ async fn db_get(db: &mut Connection, query: Vec<f32>) -> anyhow::Result<Vec<Path
         .query()
         .nearest_to(query.as_slice())
         .unwrap()
-        .limit(1)
+        // .limit(amount)
         .execute()
         .await
         .unwrap()
