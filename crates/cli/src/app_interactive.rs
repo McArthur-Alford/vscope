@@ -147,65 +147,66 @@ impl AppInteractive {
         self.status = AppEvent::Quit;
     }
 
-    fn get_preview(&self, numLines: usize) -> Vec<Line> {
+    fn get_preview(&self, num_lines: usize) -> Vec<Line> {
         let unavailable = vec![Line::from("Preview unavailable")];
 
         match &self.items.preview {
             None => unavailable,
             Some(content) => {
-                let extension = match self.items.items.get(self.items.state.selected().unwrap()) {
-                    Some(path) => {
-                        let ext = match path.extension() {
-                            Some(ext) => ext.to_str(),
-                            _ => None,
-                        };
-
-                        match ext {
-                            Some(e) => e,
-                            None => {
+                match self.items.items.get(self.items.state.selected().unwrap()) {
+                    Some(path) if path.is_file() => {
+                        let extension = match path.extension() {
+                            Some(os_ext) => match os_ext.to_str() {
+                                Some(ext) => ext,
+                                None => {
+                                    return unavailable;
+                                }
+                            },
+                            _ => {
                                 return unavailable;
                             }
+                        };
+
+                        let ps = SyntaxSet::load_defaults_newlines();
+                        let ts = ThemeSet::load_defaults();
+
+                        let syntax = ps.find_syntax_by_extension(extension);
+
+                        match syntax {
+                            Some(syntax) => {
+                                let mut h =
+                                    HighlightLines::new(syntax, &ts.themes["base16-ocean.dark"]);
+                                LinesWithEndings::from(&content)
+                                    .take(num_lines)
+                                    .map(|line| {
+                                        // LinesWithEndings enables use of newlines mode
+                                        let line_spans = h.highlight_line(line, &ps).unwrap();
+                                        Line::from(
+                                            line_spans
+                                                .iter()
+                                                .map(|(ref style, text)| {
+                                                    Span::styled(
+                                                        text.to_string(),
+                                                        ratatui::prelude::Style::new().fg(
+                                                            ratatui::prelude::Color::Rgb(
+                                                                style.foreground.r,
+                                                                style.foreground.b,
+                                                                style.foreground.b,
+                                                            ),
+                                                        ),
+                                                    )
+                                                })
+                                                .collect::<Vec<Span>>(),
+                                        )
+                                    })
+                                    .collect()
+                            }
+                            None => unavailable,
                         }
                     }
-                    None => {
-                        return unavailable;
+                    _ => {
+                        vec![Line::from(content.clone()).into()]
                     }
-                };
-
-                let ps = SyntaxSet::load_defaults_newlines();
-                let ts = ThemeSet::load_defaults();
-
-                let syntax = ps.find_syntax_by_extension(extension);
-
-                match syntax {
-                    Some(syntax) => {
-                        let mut h = HighlightLines::new(syntax, &ts.themes["base16-ocean.dark"]);
-                        LinesWithEndings::from(&content)
-                            .take(numLines)
-                            .map(|line| {
-                                // LinesWithEndings enables use of newlines mode
-                                let line_spans = h.highlight_line(line, &ps).unwrap();
-                                Line::from(
-                                    line_spans
-                                        .iter()
-                                        .map(|(ref style, text)| {
-                                            Span::styled(
-                                                text.to_string(),
-                                                ratatui::prelude::Style::new().fg(
-                                                    ratatui::prelude::Color::Rgb(
-                                                        style.foreground.r,
-                                                        style.foreground.b,
-                                                        style.foreground.b,
-                                                    ),
-                                                ),
-                                            )
-                                        })
-                                        .collect::<Vec<Span>>(),
-                                )
-                            })
-                            .collect()
-                    }
-                    None => unavailable,
                 }
             }
         }
