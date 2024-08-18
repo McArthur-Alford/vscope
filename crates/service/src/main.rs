@@ -328,7 +328,7 @@ async fn encoder(mut encoder_rx: mpsc::Receiver<PathBuf>, model: TextEmbedding) 
                         name
                     }
                 } else if path.is_dir() {
-                    name
+                    name.map(|name| format!("{}: ", name))
                 } else {
                     name
                 }
@@ -514,11 +514,18 @@ async fn db_get(db: &mut Connection, query: Vec<f32>) -> anyhow::Result<Vec<Path
     let names = cols[0].as_any().downcast_ref::<StringArray>().unwrap();
     let ranks = cols[2].as_any().downcast_ref::<Float32Array>().unwrap();
 
-    Ok(names
+    let ranks = ranks.iter().filter_map(|t| t).collect::<Vec<_>>();
+
+    let names = names
         .iter()
         .filter_map(|t| t)
         .filter_map(|t| PathBuf::from_str(t).ok())
-        .collect::<Vec<_>>())
+        .collect::<Vec<_>>();
+
+    let mut zipped = ranks.iter().zip(names).collect::<Vec<_>>();
+    zipped.sort_by(|a, b| a.0.partial_cmp(b.0).unwrap());
+
+    Ok(zipped.into_iter().map(|(_, b)| b).collect())
 }
 
 #[instrument(skip_all)]
