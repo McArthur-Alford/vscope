@@ -159,11 +159,15 @@ impl AppInteractive {
                             Some(os_ext) => match os_ext.to_str() {
                                 Some(ext) => ext,
                                 None => {
-                                    return unavailable;
+                                    return content.split('\n').map(|line| {
+                                        Line::from(line)
+                                    }).collect();
                                 }
                             },
                             _ => {
-                                return unavailable;
+                                return content.split('\n').map(|line| {
+                                    Line::from(line)
+                                }).collect();
                             }
                         };
 
@@ -201,7 +205,11 @@ impl AppInteractive {
                                     })
                                     .collect()
                             }
-                            None => unavailable,
+                            None => {
+                                content.split('\n').map(|line| {
+                                    Line::from(line)
+                                }).collect()
+                            },
                         }
                     }
                     _ => {
