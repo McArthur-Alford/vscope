@@ -324,6 +324,28 @@ impl StatefulList {
             Some(path) if path.is_file() => {
                 fs::read_to_string(path).ok()
             },
+            Some(path) if path.is_dir() => {
+                match fs::read_dir(path) {
+                    Ok(entries) => {
+                        entries.filter_map(|entry| {
+                            match entry {
+                                Ok(entry) => {
+                                    let path = entry.path();
+                                    if let Some(path_str) = path.to_str() {
+                                        Some(path_str.to_string())
+                                    } else {
+                                        None
+                                    }
+                                }
+                                Err(_) => {
+                                    None
+                                }
+                            }
+                        }).flatten().collect()
+                    },
+                    _ => None
+                }
+            },
             _ => None
         }
     }
