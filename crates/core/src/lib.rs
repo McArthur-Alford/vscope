@@ -43,7 +43,6 @@ impl Connection {
     pub async fn send_message(&mut self, message: Message) -> anyhow::Result<()> {
         let message = serde_json::to_vec(&message)?;
         let size = message.len();
-        println!("{}", size);
         self.stream.write_u32(size as u32).await?;
         self.stream.flush().await?;
         self.stream.write_all(&message).await?;
@@ -54,7 +53,6 @@ impl Connection {
         let n = self.stream.read_u32().await?;
         let mut buf = vec![0; n as usize];
         let _ = self.stream.read_exact(&mut buf).await?;
-        println!("{}", n);
         serde_json::from_slice::<Message>(&buf).context("Failed to deserialize")
     }
 

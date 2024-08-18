@@ -14,11 +14,10 @@ use Message::Confirmation;
 #[command(name = "vs", version, about, long_about = None)]
 #[clap(args_conflicts_with_subcommands = true)]
 struct Cli {
-    #[clap(flatten)]
-    search: Option<SearchArgs>,
-
     #[command(subcommand)]
     command: Option<Commands>,
+    #[clap(flatten)]
+    search: SearchArgs,
 }
 
 #[derive(Subcommand, Debug)]
@@ -30,6 +29,10 @@ enum Commands {
         #[arg(value_hint = ValueHint::AnyPath)]
         path: PathBuf,
 
+        /// Recurse into directories.
+        #[arg(short, long)]
+        recurse: bool,
+        
         #[clap(flatten)]
         args: SharedArgs,
     },
@@ -38,6 +41,10 @@ enum Commands {
         #[arg(value_hint = ValueHint::AnyPath)]
         path: PathBuf,
 
+        /// Recurse into directories.
+        #[arg(short, long)]
+        recurse: bool,
+
         #[clap(flatten)]
         args: SharedArgs,
     },
@@ -45,12 +52,8 @@ enum Commands {
 
 #[derive(Args, Debug)]
 struct SharedArgs {
-    /// Recurse into directories.
-    #[arg(short, long, group = "recurse_grp")]
-    recurse: bool,
-
     /// Recurse into symlinks.
-    #[arg(short, long, requires = "recurse_grp")]
+    #[arg(short, long)]
     symlinks: bool,
 }
 
@@ -65,16 +68,12 @@ struct SearchArgs {
     #[arg(short, long)]
     directories: bool,
 
-    /// Filter names using regex.
-    #[arg(short, long, default_value = "*")]
-    filter: String,
-
     /// Show <value> search results inline.
-    #[arg(short, long)]
+    #[arg(short, long, group="inline_grp")]
     inline: Option<usize>,
 
     /// Output results in a tabular format.
-    #[arg(short, long)]
+    #[arg(short, long, requires="inline_grp")]
     list: bool,
 }
 
@@ -89,7 +88,7 @@ async fn main() -> Result<()> {
     let mut connection = connect_to_daemon().await?;
 
     match &args.command {
-        Some(Commands::Track { path, args }) => {
+        Some(Commands::Track { path, args, recurse }) => {
             if !path.exists() {
                 return anyhow::bail!("Path does not exist");
             }
@@ -97,7 +96,7 @@ async fn main() -> Result<()> {
             let message = Message::Track(
                 fs::canonicalize(path.clone().to_owned())?,
                 TrackArgs {
-                    recursive: args.recurse,
+                    recursive: *recurse,
                     follow_symlinks: args.symlinks,
                 },
             );
@@ -110,7 +109,7 @@ async fn main() -> Result<()> {
                 }
             }
         }
-        Some(Commands::Untrack { path, args }) => {
+        Some(Commands::Untrack { path, args, recurse }) => {
             if !path.exists() {
                 return anyhow::bail!("Path does not exist");
             }
@@ -119,7 +118,7 @@ async fn main() -> Result<()> {
             let message = Message::Untrack(
                 fs::canonicalize(path.clone().to_owned())?,
                 TrackArgs {
-                    recursive: args.recurse,
+                    recursive: *recurse,
                     follow_symlinks: args.symlinks,
                 },
             );
@@ -133,7 +132,7 @@ async fn main() -> Result<()> {
             }
         }
         Some(Commands::Search(args)) => main_command(args, connection).await,
-        _ => main_command(&args.search.unwrap(), connection).await,
+        _ => main_command(&args.search, connection).await,
     }
 }
 
@@ -169,6 +168,8 @@ async fn main_command(args: &SearchArgs, mut connection: Connection) -> Result<(
                         p2.push(p);
                         p2
                     })
+                    .filter(|p| p.is_file() || args.directories && p.is_dir() 
+                        || args.args.symlinks && p.is_symlink())
                     .collect::<Vec<PathBuf>>();
 
                 if args.list {
@@ -179,7 +180,7 @@ async fn main_command(args: &SearchArgs, mut connection: Connection) -> Result<(
             } else {
                 let mut terminal = tui_helper::init().context("Failed to init terminal")?;
                 let app_result = AppInteractive::default()
-                    .run(&mut terminal, &mut connection).await;
+                    .run(&mut terminal, &mut connection, args).await;
                 tui_helper::restore()?;
 
                 app_result
