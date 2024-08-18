@@ -210,7 +210,7 @@ async fn maintainer(
             Message::Search(path) => {
                 info!("Handling search");
                 let query = model.embed(vec![path], None)?.get(0).unwrap().clone();
-                got = db_get(&mut db, query).await?;
+                got = db_get(&mut db, query).await.unwrap_or_default();
                 info!(?got);
                 response
                     .send(Message::Confirmation)
@@ -218,7 +218,11 @@ async fn maintainer(
                 info!("Finished search");
             }
             Message::Get(n) => {
-                let paths = got.iter().cloned().take(n).collect();
+                let paths = if got.len() > 0 {
+                    got.iter().cloned().take(n).collect()
+                } else {
+                    Vec::new()
+                };
                 response
                     .send(Message::Paths(paths))
                     .map_err(|e| anyhow!("Failed to send response"))?;
@@ -268,7 +272,7 @@ async fn maintainer(
                     for item in &paths {
                         tracked.remove(item);
                     }
-                    db_remove(&mut db, paths).await;
+                    db_remove(&mut db, paths).await?;
                 }
 
                 config.read().await.save();
@@ -395,7 +399,6 @@ async fn insert_db(db: &mut Connection, encodings: Vec<Vec<f32>>, paths: Vec<Pat
     let amount = encodings.len();
     let schema = db_schema().await;
     // Create a RecordBatch stream.
-    info!("A");
     let batches = RecordBatchIterator::new(
         vec![RecordBatch::try_new(
             schema.clone(),
@@ -420,7 +423,6 @@ async fn insert_db(db: &mut Connection, encodings: Vec<Vec<f32>>, paths: Vec<Pat
         schema.clone(),
     );
 
-    info!("B");
     let tbl = match db.open_table("index").execute().await {
         Ok(tbl) => tbl,
         Err(e) => db
@@ -429,9 +431,12 @@ async fn insert_db(db: &mut Connection, encodings: Vec<Vec<f32>>, paths: Vec<Pat
             .await
             .unwrap(),
     };
-    info!("C");
 
-    if let Err(e) = tbl.add(batches).execute().await {
+    let mut merge_insert = tbl.merge_insert(&["path"]);
+    merge_insert
+        .when_matched_update_all(None)
+        .when_not_matched_insert_all();
+    if let Err(e) = merge_insert.execute(Box::new(batches)).await {
         error!(err=?e, "Unable to add batches");
     }
 
@@ -504,7 +509,7 @@ async fn db_get(db: &mut Connection, query: Vec<f32>) -> anyhow::Result<Vec<Path
         .await
         .unwrap();
 
-    let b = results.get(0).unwrap();
+    let b = results.get(0).context("is the db empty? failed to read")?;
     let cols = b.columns();
     let names = cols[0].as_any().downcast_ref::<StringArray>().unwrap();
     let ranks = cols[2].as_any().downcast_ref::<Float32Array>().unwrap();
@@ -517,7 +522,24 @@ async fn db_get(db: &mut Connection, query: Vec<f32>) -> anyhow::Result<Vec<Path
 }
 
 #[instrument(skip_all)]
-async fn db_remove(db: &mut Connection, paths: Vec<PathBuf>) {}
+async fn db_remove(db: &mut Connection, paths: Vec<PathBuf>) -> anyhow::Result<()> {
+    let tbl = db_get_table(db).await?;
+    let list = format!(
+        "({})",
+        paths
+            .iter()
+            .map(|p| p.to_string_lossy().to_string())
+            .map(|p| format!("\"{}\"", p))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    let query = &format!("path in {}", list);
+    println!("{}", query);
+    if let Err(e) = tbl.delete(query).await {
+        error!(error=?e, "Failed to delete rows");
+    }
+    Ok(())
+}
 
 #[instrument(skip_all)]
 async fn db_schema() -> Arc<Schema> {
