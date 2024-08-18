@@ -3,9 +3,9 @@ use crate::app_interactive::AppInteractive;
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand, ValueHint};
 use ratatui::{style::Stylize, widgets::Widget};
+use std::fs;
 use std::path::PathBuf;
 use std::str::FromStr;
-use std::fs;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use vs_core::{connect_to_daemon, Connection, Message, TrackArgs};
 use Message::Confirmation;
@@ -23,7 +23,9 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
+    #[clap(action)]
     Search(SearchArgs),
+    #[clap(action)]
     Track {
         #[arg(value_hint = ValueHint::AnyPath)]
         path: PathBuf,
@@ -31,6 +33,7 @@ enum Commands {
         #[clap(flatten)]
         args: SharedArgs,
     },
+    #[clap(action)]
     Untrack {
         #[arg(value_hint = ValueHint::AnyPath)]
         path: PathBuf,
@@ -54,10 +57,10 @@ struct SharedArgs {
 #[derive(Args, Debug)]
 struct SearchArgs {
     query: String,
-    
+
     #[clap(flatten)]
     args: SharedArgs,
-    
+
     /// Show directories in output.
     #[arg(short, long)]
     directories: bool,
@@ -93,7 +96,10 @@ async fn main() -> Result<()> {
             println!("Tracking directory: {}", path.display());
             let message = Message::Track(
                 fs::canonicalize(path.clone().to_owned())?,
-                TrackArgs{recursive: args.recurse, follow_symlinks: args.symlinks},
+                TrackArgs {
+                    recursive: args.recurse,
+                    follow_symlinks: args.symlinks,
+                },
             );
             let response = connection.communicate(message).await?;
 
@@ -112,7 +118,10 @@ async fn main() -> Result<()> {
 
             let message = Message::Untrack(
                 fs::canonicalize(path.clone().to_owned())?,
-                TrackArgs{recursive: args.recurse, follow_symlinks: args.symlinks},
+                TrackArgs {
+                    recursive: args.recurse,
+                    follow_symlinks: args.symlinks,
+                },
             );
             let response = connection.communicate(message).await?;
 
@@ -129,10 +138,10 @@ async fn main() -> Result<()> {
 }
 
 async fn main_command(args: &SearchArgs, mut connection: Connection) -> Result<()> {
-    // let search_message = Message::Search(args.query.clone());
-    // let response = connection.communicate(search_message).await?;
-    let response = Confirmation;
-    
+    let search_message = Message::Search(args.query.clone());
+    let response = connection.communicate(search_message).await?;
+    // let response = Confirmation;
+
     match response {
         Confirmation => {
             if args.inline.is_some() {
@@ -141,7 +150,9 @@ async fn main_command(args: &SearchArgs, mut connection: Connection) -> Result<(
 
                 let paths = match response {
                     Message::Paths(paths) => paths,
-                    _ => { anyhow::bail!("Unexpected response"); }
+                    _ => {
+                        anyhow::bail!("Unexpected response");
+                    }
                 };
 
                 if args.list {
@@ -161,8 +172,6 @@ async fn main_command(args: &SearchArgs, mut connection: Connection) -> Result<(
                 Ok(())
             }
         }
-        _ => {
-            Err(anyhow::anyhow!("Unexpected response"))
-        }
+        _ => Err(anyhow::anyhow!("Unexpected response")),
     }
 }
